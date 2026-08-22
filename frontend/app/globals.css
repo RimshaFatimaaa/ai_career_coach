@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ink: #14110f;
+  --paper: #f4efe6;
+  --copper: #c46b3a;
+}
+
+html,
+body {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.font-display {
+  font-optical-sizing: auto;
+}
+
+.paper-grid {
+  background-image: radial-gradient(rgba(20, 17, 15, 0.06) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.score-ring {
+  background: conic-gradient(var(--copper) calc(var(--p) * 1%), #ddd4c6 0);
+}
+
+.resume-sheet {
+  background: #fff;
+  color: #1a1714;
+  box-shadow: 0 24px 60px rgba(20, 17, 15, 0.12);
+  border: 1px solid rgba(20, 17, 15, 0.08);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #cfc6b6;
+  border-radius: 99px;
+}
