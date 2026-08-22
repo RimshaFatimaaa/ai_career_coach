@@ -317,7 +317,7 @@ export default function ResumeDetailPage() {
               <div className="mt-4 grid grid-cols-2 gap-3">
                 {metrics.map(([k, v]) => (
                   <div key={String(k)}>
-                    <div className="text-xs text-mist">{k}</div>
+                    <div className="text-xs text-mist">{String(k)}</div>
                     <div className="font-display text-2xl">{String(v)}%</div>
                   </div>
                 ))}

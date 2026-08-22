@@ -174,7 +174,7 @@ export default function InterviewSessionPage() {
             ["Relevance", r.relevance],
           ].map(([k, v]) => (
             <Card key={String(k)}>
-              <div className="text-xs text-mist">{k}</div>
+              <div className="text-xs text-mist">{String(k)}</div>
               <div className="font-display text-3xl">{v ?? "—"}</div>
             </Card>
           ))}
