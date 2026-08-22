@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useState, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { PageTitle } from "@/components/shell";
 import { Button, Card, ErrorText, Field, inputClass } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -27,6 +28,7 @@ type Roadmap = {
   duration_label?: string;
   milestones: { month: number; week?: number; title: string; tasks: Task[] }[];
   progress: { done: number; total: number };
+  is_saved?: boolean;
 };
 
 const PRESETS = ["2-weeks", "1-months", "3-months", "6-months", "12-months"];
@@ -44,9 +46,20 @@ function parseDuration(row: Roadmap) {
 }
 
 export default function RoadmapPage() {
+  return (
+    <Suspense fallback={<p className="text-mist">Loading roadmap…</p>}>
+      <RoadmapStudio />
+    </Suspense>
+  );
+}
+
+function RoadmapStudio() {
+  const params = useSearchParams();
   const [rows, setRows] = useState<Roadmap[]>([]);
   const [active, setActive] = useState<Roadmap | null>(null);
   const [error, setError] = useState("");
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
   const [topic, setTopic] = useState("");
   const [preset, setPreset] = useState("3-months");
   const [customAmount, setCustomAmount] = useState("3");
@@ -61,16 +74,13 @@ export default function RoadmapPage() {
     setCustomUnit(dur.unit);
   }
 
-  function openRoadmap(row: Roadmap) {
-    setActive(row);
-    applyForm(row);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-
   async function load(preferId?: number) {
     const list = await api<Roadmap[]>("/api/career/roadmap");
     setRows(list);
-    const chosen = (preferId && list.find((r) => r.id === preferId)) || list[0];
+    const chosen =
+      (preferId && list.find((r) => r.id === preferId)) ||
+      list.find((r) => r.id === Number(params.get("id"))) ||
+      list[0];
     if (chosen) {
       setActive(chosen);
       applyForm(chosen);
@@ -82,7 +92,27 @@ export default function RoadmapPage() {
     desiredRole().then((role) => {
       setTopic((current) => current || role);
     });
-  }, []);
+  }, [params]);
+
+  async function saveCurrent() {
+    if (!active) {
+      setError("Generate a roadmap first, then save it.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    setNote("");
+    try {
+      const row = await api<Roadmap>(`/api/career/roadmap/${active.id}/save`, { method: "POST" });
+      setActive(row);
+      setRows((prev) => prev.map((r) => (r.id === row.id ? row : r)));
+      setNote("Roadmap saved. Find it under Saved roadmaps.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   function durationPayload() {
     return {
@@ -138,10 +168,21 @@ export default function RoadmapPage() {
 
   return (
     <div>
-      <PageTitle kicker="Career coach" title="Learning roadmap" />
+      <PageTitle
+        title="Learning roadmap"
+        action={
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" onClick={saveCurrent} disabled={!active || saving || active.is_saved}>
+              {active?.is_saved ? "Saved" : saving ? "Saving…" : "Save roadmap"}
+            </Button>
+            <Button href="/app/coach/roadmap/saved" variant="ghost">
+              Saved roadmaps
+            </Button>
+          </div>
+        }
+      />
       <p className="mb-4 max-w-3xl text-sm text-mist">
-        Enter a skill or a career — research writing, CAD, AI Engineer. The plan stays on that topic. Choosing a saved
-        plan below fills this form and shows that roadmap.
+        Enter a skill or a career — research writing, CAD, AI Engineer. Generate a plan, then save it to keep it in your library.
       </p>
       <Card className="mb-6">
         <form onSubmit={create} className="grid gap-3 md:grid-cols-2">
@@ -199,6 +240,7 @@ export default function RoadmapPage() {
         </form>
       </Card>
       <ErrorText error={error} />
+      {note && <p className="mb-4 text-sm text-[#7c5fc4]">{note}</p>}
       {active && (
         <>
           <p className="mb-4 text-sm text-mist">
@@ -244,20 +286,6 @@ export default function RoadmapPage() {
             ))}
           </div>
         </>
-      )}
-      {rows.length > 0 && (
-        <div className="mt-6 text-sm text-mist">
-          Saved roadmaps:{" "}
-          {rows.map((r) => (
-            <button
-              key={r.id}
-              className={`mr-3 ${active?.id === r.id ? "font-medium text-ink underline" : "text-copper"}`}
-              onClick={() => openRoadmap(r)}
-            >
-              {r.target_role} ({r.duration_label || `${r.duration_months}m`})
-            </button>
-          ))}
-        </div>
       )}
     </div>
   );

@@ -101,6 +101,21 @@ def test_followup_does_not_grow_interview():
     assert grown[1]["prompt"] == "Say more about the brief."
 
 
+def test_architecture_interview_is_not_ai(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.agents.interview import plan_questions
+    from app.agents import interview as interview_mod
+
+    monkeypatch.setattr(interview_mod, "gateway", SimpleNamespace(enabled=False))
+    qs = plan_questions("architecture", "mixed", 6, "BS AI student. Python, LangChain, FastAPI.", "")
+    blob = " ".join(q["prompt"] for q in qs).lower()
+    assert "python" not in blob
+    assert "langchain" not in blob
+    assert "fastapi" not in blob
+    assert any(w in blob for w in ("site", "drawing", "cad", "revit", "studio", "building", "plan", "portfolio"))
+
+
 def test_ats_does_not_invent_keywords_as_skills():
     content = {
         "contact": {"name": "A", "email": "a@b.com"},

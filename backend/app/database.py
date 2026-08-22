@@ -59,6 +59,7 @@ def migrate_schema() -> None:
         ("interview_sessions", "mode", "VARCHAR(32) DEFAULT 'text'"),
         ("profiles", "linkedin_url", "VARCHAR(500) DEFAULT ''"),
         ("profiles", "github_username", "VARCHAR(120) DEFAULT ''"),
+        ("roadmaps", "is_saved", "BOOLEAN DEFAULT 1"),
     ]
     pg_adds = [
         "ALTER TABLE knowledge_docs ADD COLUMN IF NOT EXISTS embedding jsonb",
@@ -70,6 +71,7 @@ def migrate_schema() -> None:
         "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS mode VARCHAR(32) DEFAULT 'text'",
         "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS linkedin_url VARCHAR(500) DEFAULT ''",
         "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS github_username VARCHAR(120) DEFAULT ''",
+        "ALTER TABLE roadmaps ADD COLUMN IF NOT EXISTS is_saved BOOLEAN DEFAULT TRUE",
     ]
     with engine.begin() as conn:
         if settings.is_postgres:

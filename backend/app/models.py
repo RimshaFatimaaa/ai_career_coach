@@ -94,6 +94,7 @@ class Roadmap(Base):
     duration_months: Mapped[int] = mapped_column(Integer, default=3)
     milestones: Mapped[list[Any]] = mapped_column(JSON, default=list)
     skill_gap: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    is_saved: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 

@@ -1,4 +1,7 @@
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+function apiBase() {
+  if (typeof window !== "undefined") return "";
+  return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+}
 
 export type AppAlertKind = "error" | "limit";
 
@@ -49,7 +52,7 @@ export async function api<T = unknown>(path: string, init: RequestInit = {}): Pr
   }
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(`${API}${path}`, { ...init, headers });
+  const res = await fetch(`${apiBase()}${path}`, { ...init, headers });
   if (res.status === 401) {
     clearSession();
     if (typeof window !== "undefined" && !path.startsWith("/api/auth")) {
@@ -77,13 +80,13 @@ export async function api<T = unknown>(path: string, init: RequestInit = {}): Pr
 }
 
 export function downloadUrl(path: string) {
-  return `${API}${path}`;
+  return `${apiBase()}${path}`;
 }
 
 export async function downloadFile(path: string, filename: string) {
   let res: Response;
   try {
-    res = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${getToken()}` } });
+    res = await fetch(`${apiBase()}${path}`, { headers: { Authorization: `Bearer ${getToken()}` } });
   } catch {
     throw new Error("Could not reach the API to export this file. Check that the backend is running on port 8000.");
   }

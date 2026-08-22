@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { AuthForm, Field, PasswordInput } from "@/components/ui";
+import { BrandMark, TiltCard } from "@/components/pastel";
 import { api } from "@/lib/api";
 
 function ResetForm() {
@@ -13,10 +14,10 @@ function ResetForm() {
 
   if (!token) {
     return (
-      <div className="max-w-md">
-        <h1 className="font-display text-4xl">Reset link missing</h1>
-        <p className="mt-3 text-mist">Request a new password reset from the sign-in page.</p>
-        <p className="mt-6 text-sm">
+      <div>
+        <h1 className="font-display text-[27px] text-ink">Reset link missing</h1>
+        <p className="mt-2 text-[13px] text-mist">Request a new password reset from the sign-in page.</p>
+        <p className="mt-4 text-sm">
           <Link href="/forgot-password" className="text-copper">
             Forgot password
           </Link>
@@ -48,23 +49,20 @@ function ResetForm() {
 
 export default function ResetPasswordPage() {
   return (
-    <div className="grid min-h-screen place-items-center bg-paper px-6 paper-grid">
-      <div>
-        <Link href="/login" className="mb-3 inline-flex items-center text-sm text-mist hover:text-ink">
-          ← Back
-        </Link>
-        <Link href="/" className="mb-10 block font-display text-2xl">
-          Atelier
-        </Link>
-        <Suspense fallback={<p className="text-mist">Loading…</p>}>
-          <ResetForm />
-        </Suspense>
-        <p className="mt-6 text-sm text-mist">
+    <div className="grid min-h-screen place-items-center px-5 py-16">
+      <TiltCard>
+        <BrandMark />
+        <div className="mt-7">
+          <Suspense fallback={<p className="text-mist">Loading…</p>}>
+            <ResetForm />
+          </Suspense>
+        </div>
+        <p className="mt-4 text-center text-xs text-mist">
           <Link href="/login" className="text-copper">
             Back to sign in
           </Link>
         </p>
-      </div>
+      </TiltCard>
     </div>
   );
 }

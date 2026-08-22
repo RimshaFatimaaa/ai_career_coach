@@ -7,7 +7,7 @@ import re
 import secrets
 from typing import Any
 
-from app.services.catalog import normalize_role
+from app.services.catalog import get_role, normalize_role
 from app.services.llm import SAFETY_PREAMBLE, gateway, wrap_untrusted
 from app.services.voice import aggregate_voice
 
@@ -198,6 +198,66 @@ TECHNICAL_BANK = {
 }
 
 
+ROLE_CRAFT_BANK = {
+    "architect": [
+        "Walk me through a studio or built project from brief to drawings. What was your design intent?",
+        "How did site analysis change the plan or massing on a recent project?",
+        "Tell me about a building code, accessibility, or structure constraint that forced a redesign.",
+        "How do you move between sketch, CAD or Revit, and a physical or digital model?",
+        "Describe a crit that made you redo a plan, section, or elevation. What did you change?",
+        "How would you explain a concept to a client who does not read drawings?",
+        "Talk about daylight, circulation, or material choice on a project you care about.",
+        "How do you coordinate with structure or MEP as a student or junior designer?",
+        "Walk through a construction detail or drawing set you are proud of.",
+        "How do you balance program, context, and budget on a tight site?",
+        "What would you put first in an architecture portfolio, and why that project?",
+        "Tell me about a time the existing building or site fought the scheme you wanted.",
+    ],
+    "interior designer": [
+        "Walk me through an interior from brief to finishes. What drove the spatial idea?",
+        "How do you choose materials and furniture against a real budget?",
+        "Tell me about a client who wanted a look that would not work in the space.",
+        "How do you handle lighting, circulation, and storage in a compact interior?",
+        "Describe a detailing or joinery problem you had to solve.",
+    ],
+    "artist": [
+        "Walk me through a work in your portfolio: intent, process, and what you would change.",
+        "How do you take studio critique without losing the piece?",
+        "Tell me about a material or medium constraint that shaped the work.",
+        "How do you know a piece is finished enough to show?",
+        "What does your artist statement leave out that an interviewer should still hear?",
+    ],
+    "graphic designer": [
+        "Walk me through a identity or layout project from brief to final files.",
+        "How do you defend a typographic or hierarchy choice to a client?",
+        "Tell me about a constraint that improved the design.",
+        "How do you work with developers or printers without losing the design?",
+    ],
+    "nurse": [
+        "Walk me through a shift where priorities changed suddenly. What did you do first?",
+        "How do you communicate with a patient or family under stress?",
+        "Tell me about a protocol or safety check you refused to skip.",
+        "Describe working with a multidisciplinary team on a difficult case.",
+    ],
+    "teacher": [
+        "Walk me through a lesson that did not land. What did you change the next day?",
+        "How do you handle mixed ability in one classroom?",
+        "Tell me about communicating with a parent or guardian about a concern.",
+        "How do you know students actually learned, not just finished the activity?",
+    ],
+}
+
+
+COMPUTING_LEAK = re.compile(
+    r"\b(python|langchain|langgraph|fastapi|pytorch|tensorflow|llm|gpt-?\d|chatgpt|"
+    r"rag pipeline|retrieval.augmented|embedding|vector store|fine-?tun|"
+    r"prompt engineer|hallucinat|neural network|machine learning|deep learning|"
+    r"kubernetes|docker compose|microservice|rest api|graphql|javascript|typescript|"
+    r"react native|next\.js|software engineer|leetcode|binary tree|hash map)\b",
+    re.I,
+)
+
+
 CRAFT_BANK = [
     "Walk me through a piece of work from your portfolio. What was the brief, and what did you personally do?",
     "Tell me about a project that did not go as planned. What did you change?",
@@ -255,6 +315,19 @@ COMPUTING_HINTS = (
 def _is_computing_role(target_role: str) -> bool:
     key = normalize_role(target_role)
     return any(h in key for h in COMPUTING_HINTS)
+
+
+def _craft_prompts_for(target_role: str, computing: bool) -> list[str]:
+    key = normalize_role(target_role)
+    if computing:
+        return TECHNICAL_BANK.get(key) or TECHNICAL_BANK.get("default") or []
+    return list(ROLE_CRAFT_BANK.get(key) or []) + list(CRAFT_BANK)
+
+
+def _prompt_fits_role(prompt: str, computing: bool) -> bool:
+    if computing:
+        return True
+    return not COMPUTING_LEAK.search(prompt or "")
 
 
 def _stamp(questions: list[dict], count: int) -> list[dict]:
@@ -344,18 +417,28 @@ def plan_questions(
     avoid_prompts: list[str] | None = None,
 ) -> list[dict]:
     count = max(3, min(int(count or 6), 12))
-    role_key = normalize_role(target_role)
-    tech = TECHNICAL_BANK.get(role_key, [])
     computing = _is_computing_role(target_role)
-    if computing and not tech:
-        tech = TECHNICAL_BANK.get("default", [])
-    role_bank = tech if computing else CRAFT_BANK
+    role_bank = _craft_prompts_for(target_role, computing)
+    spec = get_role(target_role)
+    role_label = spec.get("label") or target_role
+    skills = ", ".join(list((spec.get("required") or {}).keys())[:8])
     avoid = {_norm_prompt(p) for p in (avoid_prompts or []) if p}
     pool = _shuffled_pool(interview_type, computing, role_bank, avoid)
+    pool = [(k, p) for k, p in pool if _prompt_fits_role(p, computing)] or pool
     angle = VARIATION_ANGLES[secrets.randbelow(len(VARIATION_ANGLES))]
     token = secrets.token_hex(3)
     if gateway.enabled:
         recent = [p for p in (avoid_prompts or []) if p][:18]
+        field_rule = (
+            f"This interview is ONLY for {role_label} ({target_role}). "
+            f"Domain: {spec.get('description') or role_label}. Typical craft: {skills or 'this field'}. "
+            "Every question must be one a hiring panel in that field would actually ask. "
+            "The candidate profile may mention another field of study — ignore that for topic choice. "
+            "Do not ask about Python, LLMs, machine learning, software engineering, or coding "
+            f"unless the TARGET ROLE itself is computing. Target role: {target_role}."
+            if not computing
+            else f"Target role is computing: {target_role}. Technical questions should match that stack."
+        )
         messages = [
             {
                 "role": "system",
@@ -365,9 +448,8 @@ def plan_questions(
                 f"Variation angle for this session: {angle}. "
                 "Write a fresh set — different topics and wording from a typical first-round script. "
                 "Do not reuse questions from the avoid list. "
-                "Types: behavioral, or craft/domain. Do not ask generic software, Python, or ML questions "
-                f"unless the target role is in computing. Target role: {target_role}. "
-                "Ground questions in the profile. Do not ask about protected characteristics.",
+                f"Types: behavioral, or {'technical' if computing else 'craft/domain'}. {field_rule} "
+                "Do not ask about protected characteristics.",
             },
             {
                 "role": "user",
@@ -376,7 +458,7 @@ def plan_questions(
                         wrap_untrusted("profile", profile_text),
                         wrap_untrusted("job_description", job_description or "None"),
                         wrap_untrusted("avoid_recent_questions", "\n".join(recent) or "None"),
-                        f"Target role: {target_role}. Type: {interview_type}. Count: {count}. Angle: {angle}.",
+                        f"Interview role (authoritative): {role_label}. Type: {interview_type}. Count: {count}. Angle: {angle}.",
                     ]
                 ),
             },
@@ -387,7 +469,7 @@ def plan_questions(
             seen = set()
             for i, q in enumerate(data["questions"][:count]):
                 prompt = q.get("prompt") or q.get("question")
-                if not prompt:
+                if not prompt or not _prompt_fits_role(prompt, computing):
                     continue
                 key = _norm_prompt(prompt)
                 if key in seen or key in avoid:

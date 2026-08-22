@@ -69,10 +69,10 @@ export default function DashboardPage() {
           </div>
         </Card>
         <Card>
-          <Score value={data.readiness} label="Career readiness" />
+          <Score value={data.readiness} label="Career readiness" hint={`${Math.round(data.readiness)} / 100 · skill fit + resume + interviews`} />
           <div className="mt-6 space-y-4">
-            <Score value={data.resume_health} label="Resume health" />
-            <Score value={data.interview_performance} label="Interview performance" />
+            <Score value={data.resume_health} label="Resume health" hint={`${Math.round(data.resume_health)} / 100 · resume completeness`} />
+            <Score value={data.interview_performance} label="Interview performance" hint={`${Math.round(data.interview_performance)} / 100 · average mock`} />
           </div>
           <p className="mt-4 text-xs text-mist">Start at 0. They rise as you build a resume, finish mocks, and follow a roadmap.</p>
         </Card>

@@ -66,6 +66,7 @@ create table if not exists roadmaps (
   duration_months int default 3,
   milestones jsonb default '[]',
   skill_gap jsonb default '[]',
+  is_saved boolean default true,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );

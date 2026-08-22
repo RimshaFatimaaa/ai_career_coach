@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { AuthForm, Field, inputClass } from "@/components/ui";
+import { BrandMark, TiltCard } from "@/components/pastel";
 import { api } from "@/lib/api";
 import { useState } from "react";
 
@@ -9,33 +10,23 @@ export default function ForgotPasswordPage() {
   const [done, setDone] = useState("");
   const [resetUrl, setResetUrl] = useState("");
   return (
-    <div className="grid min-h-screen place-items-center bg-paper px-6 paper-grid">
-      <div>
-        <Link href="/login" className="mb-3 inline-flex items-center text-sm text-mist hover:text-ink">
-          ← Back
-        </Link>
-        <Link href="/" className="mb-10 block font-display text-2xl">
-          Atelier
-        </Link>
-        {done ? (
-          <div className="max-w-md">
-            <h1 className="font-display text-4xl">Check your email</h1>
-            <p className="mt-3 text-mist">{done}</p>
-            {resetUrl ? (
-              <p className="mt-4 text-sm">
-                <Link href={resetUrl} className="text-copper">
-                  Open reset link
-                </Link>
-              </p>
-            ) : null}
-            <p className="mt-6 text-sm text-mist">
-              <Link href="/login" className="text-copper">
-                Back to sign in
-              </Link>
-            </p>
-          </div>
-        ) : (
-          <>
+    <div className="grid min-h-screen place-items-center px-5 py-16">
+      <TiltCard>
+        <BrandMark />
+        <div className="mt-7">
+          {done ? (
+            <div>
+              <h1 className="font-display text-[27px] text-ink">Check your email</h1>
+              <p className="mt-2 text-[13px] text-mist">{done}</p>
+              {resetUrl ? (
+                <p className="mt-4 text-sm">
+                  <Link href={resetUrl} className="text-copper">
+                    Open reset link
+                  </Link>
+                </p>
+              ) : null}
+            </div>
+          ) : (
             <AuthForm
               title="Forgot password"
               subtitle="We’ll send a reset link if that email has an account."
@@ -54,14 +45,14 @@ export default function ForgotPasswordPage() {
                 setResetUrl(res.reset_url || "");
               }}
             />
-            <p className="mt-6 text-sm text-mist">
-              <Link href="/login" className="text-copper">
-                Back to sign in
-              </Link>
-            </p>
-          </>
-        )}
-      </div>
+          )}
+        </div>
+        <p className="mt-4 text-center text-xs text-mist">
+          <Link href="/login" className="text-copper">
+            Back to sign in
+          </Link>
+        </p>
+      </TiltCard>
     </div>
   );
 }

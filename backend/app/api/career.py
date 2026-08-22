@@ -178,6 +178,7 @@ def create_roadmap(payload: RoadmapIn, user: CurrentUser, db: DbDep):
         duration_months=months_store,
         milestones=milestones,
         skill_gap=gaps,
+        is_saved=False,
     )
     db.add(row)
     db.commit()
@@ -187,9 +188,33 @@ def create_roadmap(payload: RoadmapIn, user: CurrentUser, db: DbDep):
 
 
 @router.get("/roadmap")
-def list_roadmaps(user: CurrentUser, db: DbDep):
-    rows = db.query(Roadmap).filter_by(user_id=user.id).order_by(Roadmap.updated_at.desc()).all()
+def list_roadmaps(user: CurrentUser, db: DbDep, saved: bool = False):
+    q = db.query(Roadmap).filter_by(user_id=user.id)
+    if saved:
+        q = q.filter_by(is_saved=True)
+    rows = q.order_by(Roadmap.updated_at.desc()).all()
     return [_roadmap_out(_refresh_stale_roadmap(db, r, user)) for r in rows]
+
+
+@router.post("/roadmap/{rid}/save")
+def save_roadmap(rid: int, user: CurrentUser, db: DbDep):
+    row = db.query(Roadmap).filter_by(id=rid, user_id=user.id).first()
+    if not row:
+        raise HTTPException(404, "Roadmap not found")
+    row.is_saved = True
+    db.commit()
+    db.refresh(row)
+    return _roadmap_out(row)
+
+
+@router.delete("/roadmap/{rid}")
+def delete_roadmap(rid: int, user: CurrentUser, db: DbDep):
+    row = db.query(Roadmap).filter_by(id=rid, user_id=user.id).first()
+    if not row:
+        raise HTTPException(404, "Roadmap not found")
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/roadmap/{rid}")
@@ -272,6 +297,7 @@ def _roadmap_out(row: Roadmap) -> dict:
         "milestones": row.milestones,
         "skill_gap": row.skill_gap,
         "progress": {"done": done, "total": len(tasks)},
+        "is_saved": bool(getattr(row, "is_saved", False)),
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
