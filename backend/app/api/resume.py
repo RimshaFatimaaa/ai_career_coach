@@ -246,6 +246,11 @@ def delete_resume(rid: int, user: CurrentUser, db: DbDep):
 
 @router.post("/tailor")
 def tailor(payload: TailorIn, user: CurrentUser, db: DbDep):
+    limits = limits_for(user)
+    active = db.query(Resume).filter_by(user_id=user.id, is_active=True).count()
+    replace = _latest_active(db, user) if _can_replace_at_cap(limits, active) else None
+    if active >= limits["active_resumes"] and replace is None:
+        raise HTTPException(402, "Active resume limit reached for your plan")
     assert_within_limit(db, user, "tailorings")
     row = db.query(Resume).filter_by(id=payload.resume_id, user_id=user.id).first()
     if not row:
@@ -255,17 +260,33 @@ def tailor(payload: TailorIn, user: CurrentUser, db: DbDep):
         row.content or {},
         payload.job_description,
         allowed_facts(user, profile),
-        advanced=bool(limits_for(user).get("advanced_analysis")),
+        advanced=bool(limits.get("advanced_analysis")),
     )
+    title = f"Tailored — {payload.target_role or row.title}"
+    log = list(row.change_log or []) + result["changes"]
+    if replace:
+        replace.title = title
+        replace.version_type = "role_specific"
+        replace.template = row.template
+        replace.source = "tailored"
+        replace.target_role = payload.target_role
+        replace.content = result["content"]
+        replace.change_log = log + ["Replaced the Free-plan resume with a tailored version."]
+        flag_modified(replace, "content")
+        flag_modified(replace, "change_log")
+        db.commit()
+        db.refresh(replace)
+        consume(db, user, "tailorings")
+        return {**_out(replace), "keywords": result["keywords"], "changes": result["changes"]}
     tailored = Resume(
         user_id=user.id,
-        title=f"Tailored — {payload.target_role or row.title}",
+        title=title,
         version_type="role_specific",
         template=row.template,
         source="tailored",
         target_role=payload.target_role,
         content=result["content"],
-        change_log=list(row.change_log or []) + result["changes"],
+        change_log=log,
     )
     db.add(tailored)
     db.commit()

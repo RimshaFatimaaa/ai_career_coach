@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException
 from app.deps import CurrentUser, DbDep
 from app.models import CareerMemory, Conversation, InterviewSession, Profile, ProfileImport, Reminder, Resume, Roadmap, UsageRecord, User
 from app.schemas import ProfileIn, ProfileOut
+from app.services.checkout import cancel_stripe_billing
 from app.services.profile import dashboard_payload, ensure_profile, recompute_scores
 
 router = APIRouter(prefix="/api", tags=["profile"])
@@ -95,6 +96,7 @@ def export_account(user: CurrentUser, db: DbDep):
 
 @router.delete("/account")
 def delete_account(user: CurrentUser, db: DbDep):
+    cancel_stripe_billing(user, required=False, delete_customer=True)
     uid = user.id
     db.query(CareerMemory).filter_by(user_id=uid).delete()
     db.query(Conversation).filter_by(user_id=uid).delete()

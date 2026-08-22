@@ -341,6 +341,30 @@ def test_valid_card_is_accepted_and_pan_is_not_returned():
     assert info.brand == "visa"
 
 
+def test_free_plan_replaces_resume_at_cap_paid_plans_block():
+    from app.api.resume import _can_replace_at_cap
+    from app.services.billing import PLAN_LIMITS
+
+    assert _can_replace_at_cap(PLAN_LIMITS["free"], 1)
+    assert not _can_replace_at_cap(PLAN_LIMITS["pro"], 8)
+    assert not _can_replace_at_cap(PLAN_LIMITS["premium"], 1)
+
+
+def test_subscription_events_map_to_local_plans():
+    from app.services.checkout import plan_from_price_id, plan_from_subscription
+
+    assert plan_from_subscription({"status": "canceled"}) == "free"
+    assert plan_from_subscription({"status": "unpaid"}) == "free"
+    assert plan_from_subscription({"status": "incomplete_expired"}) == "free"
+    assert plan_from_subscription({"status": "past_due", "items": {"data": []}}) is None
+    unknown_active = {
+        "status": "active",
+        "items": {"data": [{"price": {"id": "price_unknown"}}]},
+    }
+    assert plan_from_subscription(unknown_active) is None
+    assert plan_from_price_id("") is None
+
+
 def test_invalid_or_expired_card_is_rejected():
     from datetime import date
 

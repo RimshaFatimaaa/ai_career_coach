@@ -2,12 +2,14 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.config import get_settings
 from app.deps import CurrentUser, DbDep
-from app.models import User
 from app.schemas import PlanCheckoutIn, PlanConfirmIn
 from app.services.billing import PLAN_LIMITS, usage_snapshot
 from app.services.cards import parse_exp, validate_card
 from app.services.checkout import (
     apply_plan,
+    cancel_stripe_billing,
+    find_user_for_stripe,
+    plan_from_subscription,
     price_id_for,
     require_password,
     stripe_client,
@@ -35,6 +37,7 @@ def checkout(payload: PlanCheckoutIn, user: CurrentUser, db: DbDep):
         return {"plan": user.plan, "status": "current"}
     if payload.plan == "free":
         require_password(user, payload.password)
+        cancel_stripe_billing(user, required=True)
         apply_plan(db, user, "free")
         return {"plan": "free", "status": "downgraded", "note": "You are back on Free. Paid features are locked."}
 
@@ -88,15 +91,49 @@ async def stripe_webhook(request: Request, db: DbDep):
         event = stripe.Webhook.construct_event(payload, sig, settings.stripe_webhook_secret)
     except Exception as exc:
         raise HTTPException(400, "Invalid webhook") from exc
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        meta = session.get("metadata") or {}
-        uid = int(meta.get("user_id") or session.get("client_reference_id") or 0)
+    event_type = event["type"]
+    obj = event["data"]["object"]
+    if event_type == "checkout.session.completed":
+        meta = obj.get("metadata") or {}
+        uid = int(meta.get("user_id") or obj.get("client_reference_id") or 0)
         plan = meta.get("plan")
-        found = db.get(User, uid) if uid else None
+        found = find_user_for_stripe(db, user_id=uid, customer_id=str(obj.get("customer") or ""))
         if found and plan in PLAN_LIMITS:
             found.plan = plan
-            if session.get("customer"):
-                found.stripe_customer_id = str(session["customer"])
+            if obj.get("customer"):
+                found.stripe_customer_id = str(obj["customer"])
             db.commit()
+        return {"ok": True}
+
+    if event_type in {"customer.subscription.deleted", "customer.subscription.updated"}:
+        found = find_user_for_stripe(db, customer_id=str(obj.get("customer") or ""))
+        plan = plan_from_subscription(obj)
+        if event_type == "customer.subscription.deleted":
+            plan = "free"
+        if found and plan in PLAN_LIMITS:
+            apply_plan(db, found, plan)
+        return {"ok": True}
+
+    if event_type == "invoice.payment_failed":
+        sub = obj.get("subscription")
+        customer_id = str(obj.get("customer") or "")
+        found = find_user_for_stripe(db, customer_id=customer_id)
+        if found and isinstance(sub, dict):
+            plan = plan_from_subscription(sub)
+            if plan in PLAN_LIMITS:
+                apply_plan(db, found, plan)
+        elif found:
+            stripe_api = stripe_client()
+            sub_id = sub if isinstance(sub, str) else ""
+            if stripe_api and sub_id:
+                try:
+                    live = stripe_api.Subscription.retrieve(sub_id)
+                    live_dict = live if isinstance(live, dict) else live.to_dict()
+                    plan = plan_from_subscription(live_dict)
+                    if plan in PLAN_LIMITS:
+                        apply_plan(db, found, plan)
+                except Exception:
+                    pass
+        return {"ok": True}
+
     return {"ok": True}

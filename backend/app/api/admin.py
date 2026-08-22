@@ -4,7 +4,7 @@ from app.deps import AdminUser, DbDep
 from app.models import InterviewSession, KnowledgeDoc, UsageRecord, User
 from app.schemas import AdminPlanIn
 from app.services.billing import PLAN_LIMITS
-from app.services.checkout import apply_plan, require_password
+from app.services.checkout import apply_plan, cancel_stripe_billing, require_password
 from app.services.llm import gateway
 
 router = APIRouter(prefix="/api", tags=["admin"])
@@ -53,5 +53,7 @@ def admin_set_plan(uid: int, payload: AdminPlanIn, admin: AdminUser, db: DbDep):
     user = db.get(User, uid)
     if not user:
         raise HTTPException(404, "User not found")
+    if payload.plan == "free":
+        cancel_stripe_billing(user, required=False)
     apply_plan(db, user, payload.plan)
     return {"id": user.id, "plan": user.plan}

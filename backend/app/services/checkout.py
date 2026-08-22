@@ -73,3 +73,90 @@ def price_id_for(plan: str) -> str:
     if plan == "premium":
         return settings.stripe_price_premium
     return ""
+
+
+def plan_from_price_id(price_id: str) -> str | None:
+    if not price_id:
+        return None
+    if price_id == settings.stripe_price_pro:
+        return "pro"
+    if price_id == settings.stripe_price_premium:
+        return "premium"
+    return None
+
+
+def _stripe_get(obj, key, default=None):
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def plan_from_subscription(sub: dict | None) -> str | None:
+    """Map a Stripe subscription object to a local plan. None means leave the current plan."""
+    if not sub:
+        return None
+    status = str(_stripe_get(sub, "status") or "").lower()
+    if status in {"canceled", "unpaid", "incomplete_expired"}:
+        return "free"
+    items = _stripe_get(sub, "items") or {}
+    data = _stripe_get(items, "data") or []
+    if not data:
+        return None
+    price = _stripe_get(data[0], "price") or {}
+    price_id = _stripe_get(price, "id") if not isinstance(price, str) else price
+    mapped = plan_from_price_id(str(price_id or ""))
+    if mapped:
+        return mapped
+    if status in {"active", "trialing"}:
+        return None
+    return "free"
+
+
+def find_user_for_stripe(db: Session, *, user_id: int = 0, customer_id: str = "") -> User | None:
+    if user_id:
+        found = db.get(User, user_id)
+        if found:
+            return found
+    cid = (customer_id or "").strip()
+    if cid:
+        return db.query(User).filter_by(stripe_customer_id=cid).first()
+    return None
+
+
+def _cancel_subscription(stripe, sid: str) -> None:
+    try:
+        stripe.Subscription.cancel(sid)
+        return
+    except Exception:
+        stripe.Subscription.delete(sid)
+
+
+def cancel_stripe_billing(user: User, *, required: bool = False, delete_customer: bool = False) -> None:
+    """Stop Stripe charges for this user. Does nothing when Stripe is unset or no customer id."""
+    stripe = stripe_client()
+    cid = (getattr(user, "stripe_customer_id", "") or "").strip()
+    if not stripe or not cid:
+        return
+    try:
+        subs = stripe.Subscription.list(customer=cid, status="all", limit=100)
+        for sub in _stripe_get(subs, "data") or []:
+            status = str(_stripe_get(sub, "status") or "").lower()
+            sid = _stripe_get(sub, "id")
+            if not sid or status in {"canceled", "incomplete_expired"}:
+                continue
+            _cancel_subscription(stripe, str(sid))
+        if delete_customer:
+            try:
+                stripe.Customer.delete(cid)
+            except Exception:
+                pass
+    except HTTPException:
+        raise
+    except Exception:
+        if required:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                "Could not cancel the Stripe subscription. Try again or contact support.",
+            ) from None
