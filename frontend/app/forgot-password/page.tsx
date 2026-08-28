@@ -8,7 +8,6 @@ import { useState } from "react";
 
 export default function ForgotPasswordPage() {
   const [done, setDone] = useState("");
-  const [resetUrl, setResetUrl] = useState("");
   return (
     <div className="grid min-h-screen place-items-center px-5 py-16">
       <TiltCard>
@@ -18,13 +17,10 @@ export default function ForgotPasswordPage() {
             <div>
               <h1 className="font-display text-[27px] text-ink">Check your email</h1>
               <p className="mt-2 text-[13px] text-mist">{done}</p>
-              {resetUrl ? (
-                <p className="mt-4 text-sm">
-                  <Link href={resetUrl} className="text-copper">
-                    Open reset link
-                  </Link>
-                </p>
-              ) : null}
+              <p className="mt-3 text-[12px] text-mist">
+                The link is valid for one hour. Running locally without an email server? The link is printed in the
+                backend console.
+              </p>
             </div>
           ) : (
             <AuthForm
@@ -37,12 +33,11 @@ export default function ForgotPasswordPage() {
                 </Field>
               }
               onSubmit={async (fd) => {
-                const res = await api<{ message: string; reset_url?: string }>("/api/auth/forgot-password", {
+                const res = await api<{ message: string }>("/api/auth/forgot-password", {
                   method: "POST",
                   body: JSON.stringify({ email: fd.get("email") }),
                 });
                 setDone(res.message);
-                setResetUrl(res.reset_url || "");
               }}
             />
           )}

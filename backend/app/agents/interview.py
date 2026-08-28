@@ -317,11 +317,20 @@ def _is_computing_role(target_role: str) -> bool:
     return any(h in key for h in COMPUTING_HINTS)
 
 
+def _shuffle(items: list[str]) -> list[str]:
+    out = list(items)
+    random.Random(secrets.randbits(64)).shuffle(out)
+    return out
+
+
 def _craft_prompts_for(target_role: str, computing: bool) -> list[str]:
     key = normalize_role(target_role)
     if computing:
-        return TECHNICAL_BANK.get(key) or TECHNICAL_BANK.get("default") or []
-    return list(ROLE_CRAFT_BANK.get(key) or []) + list(CRAFT_BANK)
+        return _shuffle(TECHNICAL_BANK.get(key) or TECHNICAL_BANK.get("default") or [])
+    # Role-specific questions are shuffled within their own tier and kept ahead
+    # of the generic craft bank. Shuffling the two together meant an
+    # architecture mock could draw six questions that mention no architecture.
+    return _shuffle(list(ROLE_CRAFT_BANK.get(key) or [])) + _shuffle(list(CRAFT_BANK))
 
 
 def _prompt_fits_role(prompt: str, computing: bool) -> bool:
@@ -389,9 +398,10 @@ def _shuffled_pool(
     rng = random.Random(secrets.randbits(64))
     craft_type = "technical" if computing else "craft"
     behavioral = [("behavioral", q) for q in BEHAVIORAL_BANK]
+    # role_bank arrives tier-ordered from _craft_prompts_for; reshuffling here
+    # would put the generic craft questions back ahead of the specific ones.
     role = [(craft_type, q) for q in role_bank]
     rng.shuffle(behavioral)
-    rng.shuffle(role)
     if interview_type == "behavioral":
         raw = behavioral
     elif interview_type == "technical":
@@ -415,11 +425,12 @@ def plan_questions(
     profile_text: str,
     job_description: str,
     avoid_prompts: list[str] | None = None,
+    plan: str = "free",
 ) -> list[dict]:
     count = max(3, min(int(count or 6), 12))
     computing = _is_computing_role(target_role)
     role_bank = _craft_prompts_for(target_role, computing)
-    spec = get_role(target_role)
+    spec = get_role(target_role, plan=plan)
     role_label = spec.get("label") or target_role
     skills = ", ".join(list((spec.get("required") or {}).keys())[:8])
     avoid = {_norm_prompt(p) for p in (avoid_prompts or []) if p}
@@ -463,7 +474,7 @@ def plan_questions(
                 ),
             },
         ]
-        data = gateway.complete_json(messages, task="interview")
+        data = gateway.complete_json(messages, task="interview", plan=plan)
         if data and isinstance(data.get("questions"), list) and data["questions"]:
             out = []
             seen = set()
@@ -521,7 +532,7 @@ def apply_followup(qs: list[dict], current_index: int, evaluation: dict) -> list
     return qs
 
 
-def evaluate_answer(question: dict, answer: str, profile_text: str, advanced: bool = False, plan: str = "pro") -> dict[str, Any]:
+def evaluate_answer(question: dict, answer: str, profile_text: str, advanced: bool = False, plan: str = "free") -> dict[str, Any]:
     qtype = question.get("type") or "behavioral"
     baseline = heuristic_eval(qtype, answer)
     if not gateway.enabled:

@@ -279,7 +279,7 @@ def craft_role(name: str) -> dict[str, Any]:
     }
 
 
-def generate_role_via_llm(name: str) -> dict[str, Any] | None:
+def generate_role_via_llm(name: str, plan: str = "free") -> dict[str, Any] | None:
     from app.services.llm import SAFETY_PREAMBLE, gateway, wrap_untrusted
 
     if not gateway.enabled:
@@ -297,6 +297,7 @@ def generate_role_via_llm(name: str) -> dict[str, Any] | None:
             {"role": "user", "content": wrap_untrusted("target_role", name)},
         ],
         task="career",
+        plan=plan,
     )
     if not data or not isinstance(data.get("required"), dict) or not data["required"]:
         return None
@@ -346,13 +347,13 @@ def is_catalog_role(name: str) -> bool:
     return normalize_role(name) in ROLE_CATALOG
 
 
-def get_role(name: str) -> dict[str, Any]:
+def get_role(name: str, plan: str = "free") -> dict[str, Any]:
     key = normalize_role(name)
     if key in ROLE_CATALOG:
         return ROLE_CATALOG[key]
     if key in _DYNAMIC:
         return _DYNAMIC[key]
-    generated = generate_role_via_llm(name) or craft_role(name)
+    generated = generate_role_via_llm(name, plan=plan) or craft_role(name)
     _DYNAMIC[key] = generated
     return generated
 

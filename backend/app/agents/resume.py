@@ -6,7 +6,13 @@ import re
 import secrets
 from typing import Any
 
-from app.services.facts import fact_check_resume, facts_from_resume, merge_allowed
+from app.services.facts import (
+    fact_check_letter,
+    fact_check_resume,
+    facts_from_profile,
+    facts_from_resume,
+    merge_allowed,
+)
 from app.services.llm import SAFETY_PREAMBLE, gateway, wrap_untrusted
 
 
@@ -16,9 +22,10 @@ def profile_to_resume_content(
     profile: dict[str, Any],
     target_role: str = "",
     template: str = "ats_classic",
+    plan: str = "free",
 ) -> dict[str, Any]:
     base = _profile_resume_base(user_name, email, profile, target_role)
-    return polish_resume_content(base, profile, target_role, template)
+    return polish_resume_content(base, profile, target_role, template, plan=plan)
 
 
 def _profile_resume_base(user_name: str, email: str, profile: dict[str, Any], target_role: str = "") -> dict[str, Any]:
@@ -58,17 +65,25 @@ def polish_resume_content(
     profile: dict[str, Any],
     target_role: str = "",
     template: str = "ats_classic",
+    plan: str = "free",
 ) -> dict[str, Any]:
     """Professional rewrite that stays inside profile facts. Wording changes every run."""
     variant = secrets.randbelow(4)
     if gateway.enabled:
-        rewritten = _llm_resume_pass(content, target_role, template, variant)
+        rewritten = _llm_resume_pass(content, profile, target_role, template, variant, plan=plan)
         if rewritten:
             return rewritten
     return _variant_resume(content, profile, target_role, template, variant)
 
 
-def _llm_resume_pass(content: dict[str, Any], target_role: str, template: str, variant: int) -> dict[str, Any] | None:
+def _llm_resume_pass(
+    content: dict[str, Any],
+    profile: dict[str, Any],
+    target_role: str,
+    template: str,
+    variant: int,
+    plan: str = "free",
+) -> dict[str, Any] | None:
     angles = (
         "lead with outcomes already on the profile",
         "lead with tools and methods already listed",
@@ -89,6 +104,7 @@ def _llm_resume_pass(content: dict[str, Any], target_role: str, template: str, v
             {"role": "user", "content": wrap_untrusted("resume", str(content))},
         ],
         task="resume",
+        plan=plan,
     )
     if not data:
         return None
@@ -96,7 +112,9 @@ def _llm_resume_pass(content: dict[str, Any], target_role: str, template: str, v
     for key in ("summary", "experience", "skills", "projects", "education"):
         if data.get(key):
             merged[key] = data[key]
-    allowed = merge_allowed({}, facts_from_resume(content))
+    # The profile has to be part of the baseline. Checking the model's output
+    # only against its own input let a thin draft be embellished freely.
+    allowed = merge_allowed(facts_from_profile(profile), facts_from_resume(content))
     merged = fact_check_resume(merged, allowed)
     merged["flagged_missing"] = list(dict.fromkeys((content.get("flagged_missing") or []) + (data.get("flagged_missing") or [])))
     merged["variant"] = variant
@@ -199,6 +217,7 @@ def tailor_resume(
     job_description: str,
     allowed_facts: dict[str, Any],
     advanced: bool = False,
+    plan: str = "free",
 ) -> dict[str, Any]:
     keywords = extract_keywords(job_description)
     if gateway.enabled:
@@ -222,7 +241,7 @@ def tailor_resume(
                 ),
             },
         ]
-        data = gateway.complete_json(messages, task="tailor", advanced=advanced)
+        data = gateway.complete_json(messages, task="tailor", advanced=advanced, plan=plan)
         if data:
             merged = {**content, **{k: data[k] for k in ("summary", "experience", "skills") if k in data}}
             merged["projects"] = data.get("projects") or content.get("projects") or []
@@ -302,7 +321,8 @@ def ats_score(content: dict[str, Any], job_description: str = "") -> dict[str, A
     else:
         ats = round(completeness * 0.85 + formatting * 0.15, 1)
     notes = [
-        "Scores are AI-generated estimates for personal tracking, not a guarantee of ATS passage or interviews.",
+        "Scores come from deterministic keyword and completeness checks, not a language model, "
+        "and do not predict whether a real ATS or recruiter will pass your resume through.",
         "No facts were invented. Missing keywords are listed so you can add only what is true.",
     ]
     if not had_jd:
@@ -347,8 +367,19 @@ _SKILLISH = {
 }
 
 
-def _flatten(content: dict[str, Any]) -> str:
-    return str(content)
+def _flatten(value: Any) -> str:
+    """Concatenate only the values of a resume.
+
+    Serializing the whole dict let structural keys like "technologies" count as
+    keyword hits and inflate the score.
+    """
+    if isinstance(value, dict):
+        return " ".join(_flatten(v) for v in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_flatten(v) for v in value)
+    if value is None or isinstance(value, bool):
+        return ""
+    return str(value)
 
 
 def cover_letter(
@@ -357,6 +388,7 @@ def cover_letter(
     job_description: str,
     style: str,
     allowed_facts: dict[str, Any],
+    plan: str = "free",
 ) -> dict[str, Any]:
     styles = {
         "professional": "Formal, confident, 3 short paragraphs.",
@@ -386,9 +418,9 @@ def cover_letter(
                 ),
             },
         ]
-        data = gateway.complete_json(messages, task="resume")
+        data = gateway.complete_json(messages, task="resume", plan=plan)
         if data and data.get("letter"):
-            return data
+            return {**fact_check_letter(data, allowed_facts), "style": style}
     name = (resume_content.get("contact") or {}).get("name") or "the candidate"
     return {
         "letter": (

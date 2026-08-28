@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.services.catalog import LEVEL_RANK, get_role, infer_level, is_catalog_role
@@ -25,8 +26,8 @@ RESOURCES = {
 }
 
 
-def analyze_skill_gap(owned_skills: list[str], target_role: str) -> list[dict[str, Any]]:
-    role = get_role(target_role)
+def analyze_skill_gap(owned_skills: list[str], target_role: str, plan: str = "free") -> list[dict[str, Any]]:
+    role = get_role(target_role, plan=plan)
     rows = []
     for skill, target in role["required"].items():
         current = infer_level(skill, owned_skills)
@@ -86,13 +87,23 @@ def analyze_skill_gap(owned_skills: list[str], target_role: str) -> list[dict[st
     return rows
 
 
+def _skill_tokens(value: str) -> set[str]:
+    return {t for t in re.split(r"[^a-z0-9+#.]+", (value or "").lower()) if t}
+
+
 def _already_listed(item: str, rows: list[dict]) -> bool:
+    """Whole-token comparison. Bare substring matching meant an unrelated short
+    word could suppress a legitimate skill, e.g. "art" inside "javascript"."""
     key = (item or "").strip().lower()
     if not key:
         return True
+    tokens = _skill_tokens(key)
     for row in rows:
-        skill = str(row.get("skill") or "").lower()
-        if key == skill or key in skill or skill in key:
+        skill = str(row.get("skill") or "").strip().lower()
+        if key == skill:
+            return True
+        other = _skill_tokens(skill)
+        if tokens and other and (tokens <= other or other <= tokens):
             return True
     return False
 
@@ -328,9 +339,9 @@ def _duration_label(unit: str, value: int | None, months_fallback: int) -> str:
     return f"{raw} month" if raw == 1 else f"{raw} months"
 
 
-def compare_roles(owned: list[str], role_a: str, role_b: str) -> dict[str, Any]:
-    a, b = get_role(role_a), get_role(role_b)
-    ga, gb = analyze_skill_gap(owned, role_a), analyze_skill_gap(owned, role_b)
+def compare_roles(owned: list[str], role_a: str, role_b: str, plan: str = "free") -> dict[str, Any]:
+    a, b = get_role(role_a, plan=plan), get_role(role_b, plan=plan)
+    ga, gb = analyze_skill_gap(owned, role_a, plan=plan), analyze_skill_gap(owned, role_b, plan=plan)
     ra, rb = readiness_from_gaps(ga), readiness_from_gaps(gb)
     if ra == rb:
         recommendation = (
@@ -374,7 +385,7 @@ def career_reply(
     memory_text: str,
     rag_context: str,
     advanced: bool = False,
-    plan: str = "pro",
+    plan: str = "free",
     history: list[dict[str, Any]] | None = None,
 ) -> tuple[str, bool]:
     if not gateway.enabled:
@@ -418,16 +429,14 @@ def career_reply(
     if not text:
         if gateway.last_error:
             return (
-                "I could not reach the language model. "
-                f"Technical detail: {gateway.last_error}\n\n"
-                "Confirm `LLM_BASE_URL=https://api.openai.com/v1` and `LLM_MODEL=gpt-4o-mini` in `backend/.env`, then restart the backend.",
+                "I could not reach the language model. Try again in a moment.",
                 False,
             )
         return _demo_reply(message, profile_text), True
     return text, False
 
 
-def extract_memories(message: str) -> list[dict[str, str]]:
+def extract_memories(message: str, plan: str = "free") -> list[dict[str, str]]:
     """Pull lasting preferences from a user message. Empty if nothing durable."""
     if not gateway.enabled or len(message) < 20:
         return []
@@ -444,6 +453,7 @@ def extract_memories(message: str) -> list[dict[str, str]]:
             {"role": "user", "content": wrap_untrusted("user_message", message)},
         ],
         task="memory",
+        plan=plan,
     )
     items = (data or {}).get("memories") if data else None
     if not isinstance(items, list):

@@ -28,8 +28,13 @@ export default function SavedRoadmapsPage() {
   }, []);
 
   async function remove(id: number) {
-    await api(`/api/career/roadmap/${id}`, { method: "DELETE" });
-    setRows((prev) => prev.filter((r) => r.id !== id));
+    setError("");
+    try {
+      await api(`/api/career/roadmap/${id}`, { method: "DELETE" });
+      setRows((prev) => prev.filter((r) => r.id !== id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not delete that roadmap");
+    }
   }
 
   return (

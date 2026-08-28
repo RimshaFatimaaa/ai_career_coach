@@ -1,3 +1,10 @@
+title: Personalized reminders
+source: internal
+category: product
+topic: reminders
+target_role: any
+experience_level: any
+
 # Personalized reminders
 
 Reminders are generated from incomplete roadmap tasks and weak interview scores, or created by hand.

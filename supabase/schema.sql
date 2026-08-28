@@ -18,6 +18,8 @@ create table if not exists users (
   card_brand text default '',
   password_reset_token_hash text default '',
   password_reset_expires timestamptz,
+  terms_accepted_at timestamptz,
+  session_epoch integer default 0,
   is_active boolean default true,
   created_at timestamptz default now()
 );
@@ -54,6 +56,7 @@ create table if not exists resumes (
   content jsonb default '{}',
   change_log jsonb default '[]',
   last_ats jsonb,
+  file_path text default '',
   is_active boolean default true,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
@@ -113,7 +116,8 @@ create table if not exists usage_records (
   feature text,
   period text,
   count int default 0,
-  tokens int default 0
+  tokens int default 0,
+  unique (user_id, feature, period)
 );
 
 create table if not exists knowledge_docs (
@@ -166,3 +170,6 @@ alter table users add column if not exists card_last4 text default '';
 alter table users add column if not exists card_brand text default '';
 alter table users add column if not exists password_reset_token_hash text default '';
 alter table users add column if not exists password_reset_expires timestamptz;
+alter table users add column if not exists terms_accepted_at timestamptz;
+alter table users add column if not exists session_epoch integer default 0;
+alter table resumes add column if not exists file_path text default '';

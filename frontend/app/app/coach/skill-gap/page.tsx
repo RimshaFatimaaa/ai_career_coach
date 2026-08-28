@@ -72,7 +72,7 @@ function GapTable({ gaps }: { gaps: Gap[] }) {
       <table className="w-full text-left text-sm">
         <thead className="text-xs uppercase tracking-wider text-mist">
           <tr>
-            {["Skill", "Your level", "Role wants", "Learning priority", "Why", "Resource"].map((h) => (
+            {["Skill", "Your level", "Role wants", "Learning priority", "Why", "Resource", "Exercise", "Project", "Target"].map((h) => (
               <th key={h} className="px-4 py-3 font-medium">
                 {h}
               </th>
@@ -88,6 +88,9 @@ function GapTable({ gaps }: { gaps: Gap[] }) {
               <td className={`px-4 py-3 ${gapClass(g)}`}>{gapLabel(g)}</td>
               <td className="px-4 py-3 text-mist">{g.why_it_matters}</td>
               <td className="px-4 py-3 text-mist">{g.resource}</td>
+              <td className="px-4 py-3 text-mist">{g.exercise}</td>
+              <td className="px-4 py-3 text-mist">{g.project}</td>
+              <td className="px-4 py-3 text-mist">{g.recommended_proficiency}</td>
             </tr>
           ))}
         </tbody>
@@ -201,6 +204,7 @@ export default function SkillGapPage() {
               breakdown={data?.fit_b}
             />
           </div>
+          {data?.closer && <p className="mb-4 text-sm">Closer fit: {data.closer}</p>}
           {data?.recommendation && <p className="mb-4 text-sm">{data.recommendation}</p>}
           <div className="space-y-6">
             <div>

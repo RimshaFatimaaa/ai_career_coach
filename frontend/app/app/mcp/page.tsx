@@ -28,11 +28,20 @@ export default function McpPage() {
     setResult("");
     try {
       const parsed = args.trim() ? JSON.parse(args) : {};
-      const res = await api<{ result: unknown }>("/mcp", {
+      const res = await api<{
+        result?: { content?: { json?: unknown }[] };
+        error?: { code: number; message: string };
+      }>("/mcp", {
         method: "POST",
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: parsed } }),
       });
-      setResult(JSON.stringify(res.result ?? res, null, 2));
+      if (res.error) {
+        setError(`${res.error.message} (JSON-RPC ${res.error.code})`);
+        return;
+      }
+      // Show the tool's own payload, not the transport envelope around it.
+      const payload = res.result?.content?.[0]?.json ?? res.result ?? res;
+      setResult(JSON.stringify(payload, null, 2));
     } catch (e) {
       setError(e instanceof Error ? e.message : "MCP call failed");
     }

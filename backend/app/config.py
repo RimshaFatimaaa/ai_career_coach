@@ -6,6 +6,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Publicly known, so it must never sign tokens anywhere but a developer machine.
+DEV_SECRET_KEY = "dev-secret-change-me"
+MIN_SECRET_KEY_LENGTH = 32
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -21,10 +25,19 @@ class Settings(BaseSettings):
 
     app_name: str = "AI Career Coach"
     app_env: str = "development"
-    secret_key: str = "dev-secret-change-me"
+    secret_key: str = DEV_SECRET_KEY
     frontend_url: str = "http://localhost:3000"
     database_url: str = "sqlite:///./career_coach.db"
     supabase_url: str = ""
+
+    # Seed administrator. Outside development the account is only created when
+    # ADMIN_PASSWORD is supplied, so no deployment ships a known login.
+    admin_email: str = "admin@careercoach.app"
+    admin_password: str = ""
+    rate_limit_enabled: bool = True
+    # Only enable behind a proxy you control: a direct client can set
+    # X-Forwarded-For freely and would otherwise sidestep the rate limit.
+    trust_proxy_headers: bool = False
 
     llm_api_key: str = ""
     llm_base_url: str = "https://api.openai.com/v1"
@@ -70,6 +83,7 @@ class Settings(BaseSettings):
         "embedding_api_key",
         "database_url",
         "secret_key",
+        "admin_password",
         "groq_api_key",
         "gemini_api_key",
         "deepseek_api_key",
@@ -90,6 +104,32 @@ class Settings(BaseSettings):
     @property
     def embedding_key(self) -> str:
         return self.embedding_api_key or self.llm_api_key
+
+    @property
+    def is_development(self) -> bool:
+        return self.app_env.strip().lower() in ("development", "dev", "local", "test")
+
+    @property
+    def seed_admin_password(self) -> str:
+        """Password for the bootstrap admin, or "" when it must not be created."""
+        if self.admin_password:
+            return self.admin_password
+        return "Admin1234!" if self.is_development else ""
+
+    @property
+    def secret_key_problem(self) -> str:
+        """Why the signing key is unsafe to deploy with, or "" when it is fine.
+
+        A forgeable key means anyone can mint a token for any account, so this
+        is checked at startup rather than left to a deployment checklist.
+        """
+        if self.is_development:
+            return ""
+        if not self.secret_key or self.secret_key == DEV_SECRET_KEY:
+            return "SECRET_KEY is unset or still the development default."
+        if len(self.secret_key) < MIN_SECRET_KEY_LENGTH:
+            return f"SECRET_KEY must be at least {MIN_SECRET_KEY_LENGTH} characters."
+        return ""
 
     @property
     def is_postgres(self) -> bool:

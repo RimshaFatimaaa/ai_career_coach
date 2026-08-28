@@ -1,0 +1,19 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Secrets and local state must never reach an image layer.
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite3
+storage/
+
+.git/
+.gitignore
+tests/

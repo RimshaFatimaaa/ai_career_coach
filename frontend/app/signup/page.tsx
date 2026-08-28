@@ -34,7 +34,7 @@ export default function SignupPage() {
                 <Field label="Email">
                   <input name="email" type="email" required className={inputClass} />
                 </Field>
-                <Field label="Password (min 8)">
+                <Field label="Password (min 8, needs a letter and a number)">
                   <PasswordInput name="password" minLength={8} required autoComplete="new-password" />
                 </Field>
                 <label className="flex items-start gap-2 text-xs text-mist">

@@ -15,13 +15,33 @@ type Usage = {
   providers?: string[];
   card_last4?: string;
   card_brand?: string;
+  active_resumes?: number;
   resume_generations: { used: number; limit: number };
   resume_analyses: { used: number; limit: number };
+  resume_uploads: { used: number; limit: number };
   tailorings: { used: number; limit: number };
   mock_interviews: { used: number; limit: number };
   interview_questions: { used: number; limit: number };
   cover_letters: { used: number; limit: number };
+  career_chats: { used: number; limit: number };
+  profile_imports: { used: number; limit: number };
+  skill_gap_analyses: { used: number; limit: number };
+  roadmaps: { used: number; limit: number };
 };
+
+const USAGE_ROWS = [
+  "resume_generations",
+  "resume_analyses",
+  "resume_uploads",
+  "tailorings",
+  "mock_interviews",
+  "interview_questions",
+  "cover_letters",
+  "career_chats",
+  "profile_imports",
+  "skill_gap_analyses",
+  "roadmaps",
+] as const;
 
 const PLANS = [
   { id: "free", price: "$0", note: "1 resume · 2 generations · 1 mock · 1 cover letter / month" },
@@ -55,6 +75,8 @@ export default function SettingsPage() {
   const [exp, setExp] = useState("");
   const [cvc, setCvc] = useState("");
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
 
   async function load() {
     const u = await api<Usage>("/api/billing/usage");
@@ -121,6 +143,21 @@ export default function SettingsPage() {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start checkout");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteAccount(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api("/api/account", { method: "DELETE", body: JSON.stringify({ password: deletePassword }) });
+      clearSession();
+      router.push("/");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete the account.");
     } finally {
       setBusy(false);
     }
@@ -253,16 +290,17 @@ export default function SettingsPage() {
             </p>
           ) : null}
           <ul className="mt-3 space-y-1 text-sm">
-            {(["resume_generations", "resume_analyses", "tailorings", "mock_interviews", "interview_questions", "cover_letters"] as const).map(
-              (k) => (
-                <li key={k}>
-                  {k.replace(/_/g, " ")}: {usage[k].used} / {usage[k].limit}
-                </li>
-              )
-            )}
+            {USAGE_ROWS.filter((k) => usage[k]).map((k) => (
+              <li key={k}>
+                {k.replace(/_/g, " ")}: {usage[k].used} / {usage[k].limit}
+              </li>
+            ))}
           </ul>
           <p className="mt-3 text-xs text-mist">
-            Voice interviews: {usage.voice_interviews ? "included" : "Premium"} · Models: {(usage.providers || []).join(", ") || "demo"}
+            Voice interviews: {usage.voice_interviews ? "included" : "Premium"}
+            {usage.career_memory ? " · Career memory: included" : " · Career memory: Pro"}
+            {typeof usage.active_resumes === "number" ? ` · Active resumes: up to ${usage.active_resumes}` : ""}
+            {usage.providers && usage.providers.length > 0 ? ` · Models: ${usage.providers.join(", ")}` : ""}
           </p>
         </Card>
       )}
@@ -283,29 +321,57 @@ export default function SettingsPage() {
           <Button
             variant="ghost"
             onClick={async () => {
-              const data = await api("/api/account/export");
-              const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement("a");
-              a.href = url;
-              a.download = "career-coach-export.json";
-              a.click();
+              setError("");
+              try {
+                const data = await api("/api/account/export");
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "career-coach-export.json";
+                a.click();
+              } catch (e) {
+                setError(e instanceof Error ? e.message : "Could not export your data");
+              }
             }}
           >
             Export my data
           </Button>
           <Button
             variant="ink"
-            onClick={async () => {
-              if (!confirm("Delete account and all data? This cannot be undone.")) return;
-              await api("/api/account", { method: "DELETE" });
-              clearSession();
-              router.push("/");
+            onClick={() => {
+              setDeleting(true);
+              setDeletePassword("");
+              setError("");
             }}
           >
             Delete account
           </Button>
         </div>
+        {deleting && (
+          <form onSubmit={deleteAccount} className="max-w-md space-y-3 border-t border-mist/20 pt-4">
+            <p className="text-sm text-mist">
+              This permanently removes your profile, resumes, interviews, roadmaps, and memory. Export first if you want a
+              copy. Enter your password to confirm.
+            </p>
+            <Field label="Account password">
+              <PasswordInput
+                required
+                autoComplete="current-password"
+                value={deletePassword}
+                onChange={(e) => setDeletePassword(e.target.value)}
+              />
+            </Field>
+            <div className="flex gap-2">
+              <Button type="submit" variant="ink" disabled={busy}>
+                {busy ? "Deleting…" : "Permanently delete"}
+              </Button>
+              <Button variant="ghost" onClick={() => setDeleting(false)}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        )}
       </Card>
     </div>
   );

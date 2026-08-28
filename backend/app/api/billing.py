@@ -24,7 +24,10 @@ settings = get_settings()
 def usage(user: CurrentUser, db: DbDep):
     snap = usage_snapshot(db, user)
     snap["stripe_enabled"] = settings.stripe_enabled
-    snap["providers"] = gateway.providers()
+    # Which models back the product is backend configuration, not something a
+    # customer needs; admins can still see it on /api/health.
+    if getattr(user, "role", "") == "admin":
+        snap["providers"] = gateway.providers()
     return snap
 
 

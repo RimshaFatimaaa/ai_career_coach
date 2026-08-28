@@ -9,11 +9,12 @@ from app.agents.resume import ats_score, cover_letter, profile_to_resume_content
 from app.deps import CurrentUser, DbDep
 from app.models import Resume
 from app.schemas import ATSIn, CoverLetterIn, ResumeGenerateIn, ResumeUpdateIn, TailorIn
-from app.services.billing import assert_within_limit, consume, limits_for
+from app.services.billing import assert_template_allowed, assert_within_limit, consume, limits_for
 from app.services.export import TEMPLATES, render_docx, render_markdown, render_pdf
+from app.services.facts import fact_check_resume, facts_from_resume, merge_allowed
 from app.services.parsers import extract_text, parse_resume_text
 from app.services.profile import allowed_facts, ensure_profile, profile_to_text, recompute_scores
-from app.services.storage import save_bytes
+from app.services.storage import delete_path, save_bytes
 
 router = APIRouter(prefix="/api/resumes", tags=["resumes"])
 
@@ -98,7 +99,9 @@ def generate(payload: ResumeGenerateIn, user: CurrentUser, db: DbDep):
         },
         payload.target_role,
         payload.template,
+        plan=user.plan,
     )
+    consume(db, user, "resume_generations")
     if replace:
         replace.title = payload.title or replace.title
         replace.version_type = payload.version_type
@@ -113,7 +116,6 @@ def generate(payload: ResumeGenerateIn, user: CurrentUser, db: DbDep):
         flag_modified(replace, "change_log")
         db.commit()
         db.refresh(replace)
-        consume(db, user, "resume_generations")
         recompute_scores(db, user)
         return _out(replace)
     row = Resume(
@@ -129,7 +131,6 @@ def generate(payload: ResumeGenerateIn, user: CurrentUser, db: DbDep):
     db.add(row)
     db.commit()
     db.refresh(row)
-    consume(db, user, "resume_generations")
     recompute_scores(db, user)
     return _out(row)
 
@@ -141,6 +142,7 @@ async def upload(user: CurrentUser, db: DbDep, file: UploadFile = File(...)):
     replace = _latest_active(db, user) if _can_replace_at_cap(limits, active) else None
     if active >= limits["active_resumes"] and replace is None:
         raise HTTPException(402, "Active resume limit reached for your plan")
+    assert_within_limit(db, user, "resume_uploads")
     data = await file.read()
     if len(data) > 8_000_000:
         raise HTTPException(400, "File too large (8MB max)")
@@ -148,8 +150,17 @@ async def upload(user: CurrentUser, db: DbDep, file: UploadFile = File(...)):
         text = extract_text(file.filename or "resume.pdf", data)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        # pypdf / python-docx raise their own errors on damaged files.
+        raise HTTPException(400, f"Could not read that file: {exc}") from exc
     parsed = parse_resume_text(text)
-    save_bytes(data, file.filename or "resume.pdf", "resumes")
+    try:
+        # Stored before the row is written, so a disk or R2 outage cannot leave
+        # a resume pointing at a file that was never saved.
+        stored_path = save_bytes(data, file.filename or "resume.pdf", "resumes")
+    except Exception as exc:
+        raise HTTPException(502, "Could not store the uploaded file. Try again in a moment.") from exc
+    consume(db, user, "resume_uploads")
     content = {
         "contact": parsed["contact"],
         "summary": parsed["summary"],
@@ -161,10 +172,13 @@ async def upload(user: CurrentUser, db: DbDep, file: UploadFile = File(...)):
     }
     note = "Parsed from upload. Please review extracted fields — parsers miss formatting."
     if replace:
+        if replace.file_path:
+            delete_path(replace.file_path)
         replace.title = file.filename or replace.title
         replace.version_type = "master"
         replace.source = "uploaded"
         replace.content = content
+        replace.file_path = stored_path
         log = list(replace.change_log or [])
         log.append("Replaced the Free-plan resume with an uploaded file.")
         replace.change_log = log
@@ -181,6 +195,7 @@ async def upload(user: CurrentUser, db: DbDep, file: UploadFile = File(...)):
         template="ats_classic",
         source="uploaded",
         content=content,
+        file_path=stored_path,
         change_log=[note],
     )
     db.add(row)
@@ -199,13 +214,22 @@ def update_resume(rid: int, payload: ResumeUpdateIn, user: CurrentUser, db: DbDe
     if data.get("template") and data["template"] not in limits_for(user).get("templates", []):
         raise HTTPException(402, "That template is not on your plan")
     if "content" in data:
+        # Hand edits go through the same fact check as generated output,
+        # otherwise the anti-hallucination guarantee has a hole in the middle.
+        profile = ensure_profile(db, user)
+        allowed = merge_allowed(allowed_facts(user, profile), facts_from_resume(row.content or {}))
+        data["content"] = fact_check_resume(data["content"], allowed)
         log = list(row.change_log or [])
         log.append("Section-level edit by user.")
         row.change_log = log
+        flag_modified(row, "change_log")
     for k, v in data.items():
         setattr(row, k, v)
+    if "content" in data:
+        flag_modified(row, "content")
     db.commit()
     db.refresh(row)
+    recompute_scores(db, user)
     return _out(row)
 
 
@@ -218,6 +242,8 @@ def duplicate(rid: int, user: CurrentUser, db: DbDep):
     row = db.query(Resume).filter_by(id=rid, user_id=user.id).first()
     if not row:
         raise HTTPException(404, "Resume not found")
+    if row.template not in limits.get("templates", []):
+        raise HTTPException(402, "That template is not on your plan")
     copy = Resume(
         user_id=user.id,
         title=f"{row.title} (copy)",
@@ -240,7 +266,11 @@ def delete_resume(rid: int, user: CurrentUser, db: DbDep):
     if not row:
         raise HTTPException(404, "Resume not found")
     row.is_active = False
+    if row.file_path:
+        delete_path(row.file_path)
+        row.file_path = ""
     db.commit()
+    recompute_scores(db, user)
     return {"ok": True}
 
 
@@ -255,19 +285,23 @@ def tailor(payload: TailorIn, user: CurrentUser, db: DbDep):
     row = db.query(Resume).filter_by(id=payload.resume_id, user_id=user.id).first()
     if not row:
         raise HTTPException(404, "Resume not found")
+    allowed_templates = limits.get("templates") or ["ats_classic"]
+    template = row.template if row.template in allowed_templates else allowed_templates[0]
     profile = ensure_profile(db, user)
     result = tailor_resume(
         row.content or {},
         payload.job_description,
         allowed_facts(user, profile),
         advanced=bool(limits.get("advanced_analysis")),
+        plan=user.plan,
     )
+    consume(db, user, "tailorings")
     title = f"Tailored — {payload.target_role or row.title}"
     log = list(row.change_log or []) + result["changes"]
     if replace:
         replace.title = title
         replace.version_type = "role_specific"
-        replace.template = row.template
+        replace.template = template
         replace.source = "tailored"
         replace.target_role = payload.target_role
         replace.content = result["content"]
@@ -276,13 +310,12 @@ def tailor(payload: TailorIn, user: CurrentUser, db: DbDep):
         flag_modified(replace, "change_log")
         db.commit()
         db.refresh(replace)
-        consume(db, user, "tailorings")
         return {**_out(replace), "keywords": result["keywords"], "changes": result["changes"]}
     tailored = Resume(
         user_id=user.id,
         title=title,
         version_type="role_specific",
-        template=row.template,
+        template=template,
         source="tailored",
         target_role=payload.target_role,
         content=result["content"],
@@ -291,7 +324,6 @@ def tailor(payload: TailorIn, user: CurrentUser, db: DbDep):
     db.add(tailored)
     db.commit()
     db.refresh(tailored)
-    consume(db, user, "tailorings")
     return {**_out(tailored), "keywords": result["keywords"], "changes": result["changes"]}
 
 
@@ -301,10 +333,12 @@ def ats(payload: ATSIn, user: CurrentUser, db: DbDep):
     row = db.query(Resume).filter_by(id=payload.resume_id, user_id=user.id).first()
     if not row:
         raise HTTPException(404, "Resume not found")
+    if not (payload.job_description or "").strip():
+        raise HTTPException(400, "Paste a job description before running ATS.")
+    consume(db, user, "resume_analyses")
     result = ats_score(row.content or {}, payload.job_description)
     row.last_ats = result
     db.commit()
-    consume(db, user, "resume_analyses")
     recompute_scores(db, user)
     return result
 
@@ -315,15 +349,16 @@ def make_cover_letter(payload: CoverLetterIn, user: CurrentUser, db: DbDep):
     row = db.query(Resume).filter_by(id=payload.resume_id, user_id=user.id).first()
     if not row:
         raise HTTPException(404, "Resume not found")
+    consume(db, user, "cover_letters")
     profile = ensure_profile(db, user)
     result = cover_letter(
         profile_to_text(user, profile),
         row.content or {},
         payload.job_description,
         payload.style,
-        allowed_facts(user, profile),
+        merge_allowed(allowed_facts(user, profile), facts_from_resume(row.content or {})),
+        plan=user.plan,
     )
-    consume(db, user, "cover_letters")
     return result
 
 
@@ -340,6 +375,8 @@ def export_resume(rid: int, user: CurrentUser, db: DbDep, fmt: str = "pdf"):
     content = dict(row.content or {})
     if row.target_role:
         content["target_role"] = row.target_role
+    if fmt in ("pdf", "docx", "md", "txt"):
+        assert_template_allowed(user, row.template)
     if fmt == "pdf":
         try:
             data = render_pdf(content, row.template)
@@ -354,7 +391,7 @@ def export_resume(rid: int, user: CurrentUser, db: DbDep, fmt: str = "pdf"):
         if not limits_for(user).get("docx_export"):
             raise HTTPException(402, "DOCX export is on Pro and Premium")
         try:
-            data = render_docx(content)
+            data = render_docx(content, row.template)
         except Exception as exc:
             raise HTTPException(500, f"Could not build the Word file ({exc}).") from exc
         return Response(
@@ -363,9 +400,7 @@ def export_resume(rid: int, user: CurrentUser, db: DbDep, fmt: str = "pdf"):
             headers={"Content-Disposition": f'attachment; filename="{_download_name(row.title, "docx")}"'},
         )
     if fmt == "md":
-        text = render_markdown(content)
-        return Response(text, media_type="text/markdown")
+        return Response(render_markdown(content, row.template), media_type="text/markdown")
     if fmt == "txt":
-        text = render_markdown(content)
-        return Response(text, media_type="text/plain")
+        return Response(render_markdown(content, row.template), media_type="text/plain")
     raise HTTPException(400, "fmt must be pdf, docx, md, or txt")

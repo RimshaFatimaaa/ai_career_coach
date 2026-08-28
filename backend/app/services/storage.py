@@ -41,3 +41,22 @@ def read_path(path: str) -> bytes:
         obj = _r2_client().get_object(Bucket=bucket, Key=key)
         return obj["Body"].read()
     return Path(path).read_bytes()
+
+
+def delete_path(path: str) -> bool:
+    """Best-effort removal so deleted resumes do not leave files behind."""
+    if not path:
+        return False
+    try:
+        if path.startswith("r2://"):
+            bucket, _, key = path.removeprefix("r2://").partition("/")
+            _r2_client().delete_object(Bucket=bucket, Key=key)
+            return True
+        target = Path(path).resolve()
+        root = Path(settings.storage_dir).resolve()
+        if root not in target.parents:
+            return False
+        target.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False

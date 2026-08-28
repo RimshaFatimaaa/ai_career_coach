@@ -1,10 +1,11 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
@@ -19,32 +20,78 @@ from app.api.resume import router as resume_router
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, migrate_schema
 from app.models import User
+from app.ratelimit import limiter
 from app.services.auth import hash_password
 from app.services.llm import gateway
 from app.services.rag import ingest_knowledge
 
 settings = get_settings()
-limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
+log = logging.getLogger("uvicorn.error")
+
+# Superseded by settings.admin_email. Older databases still carry this address,
+# which pydantic's EmailStr rejects, so the account could never sign in.
+LEGACY_ADMIN_EMAIL = "admin@careercoach.local"
+
+
+def seed_admin(db) -> None:
+    email = settings.admin_email.strip().lower()
+    password = settings.seed_admin_password
+    legacy = db.query(User).filter_by(email=LEGACY_ADMIN_EMAIL).first()
+    if legacy and not db.query(User).filter_by(email=email).first():
+        legacy.email = email
+        if password:
+            legacy.password_hash = hash_password(password)
+        db.commit()
+        log.warning("Renamed the legacy admin account to %s so it can sign in.", email)
+        return
+    existing = db.query(User).filter_by(email=email).first()
+    if existing:
+        if existing.role != "admin":
+            log.error(
+                "ADMIN_EMAIL %s is already a non-admin account. Set a different ADMIN_EMAIL; "
+                "refusing to promote a squatted address.",
+                email,
+            )
+        return
+    if not password:
+        log.warning(
+            "No ADMIN_PASSWORD set and APP_ENV is %s — skipping admin seed. "
+            "Set ADMIN_EMAIL and ADMIN_PASSWORD to create one.",
+            settings.app_env,
+        )
+        return
+    db.add(
+        User(
+            email=email,
+            password_hash=hash_password(password),
+            full_name="Platform Admin",
+            role="admin",
+            plan="premium",
+        )
+    )
+    db.commit()
+    if not settings.admin_password:
+        log.warning(
+            "Seeded development admin %s with the documented default password. "
+            "Set ADMIN_PASSWORD before deploying.",
+            email,
+        )
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    problem = settings.secret_key_problem
+    if problem:
+        raise RuntimeError(
+            f"Refusing to start with APP_ENV={settings.app_env}: {problem} "
+            "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+        )
     Base.metadata.create_all(bind=engine)
     migrate_schema()
     db = SessionLocal()
     try:
         ingest_knowledge(db)
-        if not db.query(User).filter_by(email="admin@careercoach.local").first():
-            db.add(
-                User(
-                    email="admin@careercoach.local",
-                    password_hash=hash_password("Admin1234!"),
-                    full_name="Platform Admin",
-                    role="admin",
-                    plan="premium",
-                )
-            )
-            db.commit()
+        seed_admin(db)
     finally:
         db.close()
     yield
@@ -53,6 +100,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -76,10 +124,16 @@ app.include_router(mcp_router)
 
 @app.get("/api/health")
 def health():
+    """Unauthenticated liveness probe.
+
+    Infrastructure detail is only returned in development; production callers
+    get the minimum a load balancer needs.
+    """
+    base = {"ok": True, "app": settings.app_name, "llm": gateway.enabled}
+    if not settings.is_development:
+        return base
     return {
-        "ok": True,
-        "app": settings.app_name,
-        "llm": gateway.enabled,
+        **base,
         "llm_model": settings.llm_model,
         "llm_error": gateway.last_error or None,
         "providers": gateway.providers(),

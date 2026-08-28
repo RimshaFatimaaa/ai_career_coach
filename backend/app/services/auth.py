@@ -26,14 +26,19 @@ def verify_password(password: str, stored: str) -> bool:
     return check == digest
 
 
-def create_access_token(user_id: int) -> str:
+def create_access_token(user_id: int, session_epoch: int = 0) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
-    return jwt.encode({"sub": str(user_id), "exp": expire}, settings.secret_key, algorithm=ALGORITHM)
+    return jwt.encode(
+        {"sub": str(user_id), "exp": expire, "epoch": int(session_epoch or 0)},
+        settings.secret_key,
+        algorithm=ALGORITHM,
+    )
 
 
-def decode_token(token: str) -> int:
+def decode_token(token: str) -> tuple[int, int]:
+    """Return (user_id, session_epoch). Bumping the epoch logs every device out."""
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
-        return int(payload["sub"])
+        return int(payload["sub"]), int(payload.get("epoch") or 0)
     except (JWTError, KeyError, ValueError) as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token") from exc

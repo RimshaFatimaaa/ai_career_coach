@@ -13,10 +13,10 @@ type Task = {
   skill: string;
   day?: string;
   objective: string;
-  resource: string;
-  exercise: string;
-  project: string;
-  expected_result: string;
+  resource?: string;
+  exercise?: string;
+  project?: string;
+  expected_result?: string;
   deadline: string;
   completed: boolean;
   kind?: string;
@@ -64,6 +64,7 @@ function RoadmapStudio() {
   const [preset, setPreset] = useState("3-months");
   const [customAmount, setCustomAmount] = useState("3");
   const [customUnit, setCustomUnit] = useState("months");
+  const [customTask, setCustomTask] = useState<Record<number, string>>({});
 
   function applyForm(row: Roadmap) {
     setTopic(row.target_role || "");
@@ -77,13 +78,27 @@ function RoadmapStudio() {
   async function load(preferId?: number) {
     const list = await api<Roadmap[]>("/api/career/roadmap");
     setRows(list);
-    const chosen =
-      (preferId && list.find((r) => r.id === preferId)) ||
-      list.find((r) => r.id === Number(params.get("id"))) ||
-      list[0];
-    if (chosen) {
+    const rawId = preferId != null ? String(preferId) : params.get("id");
+    if (rawId) {
+      const requested = Number(rawId);
+      if (!Number.isFinite(requested)) {
+        setError("That roadmap no longer exists.");
+        setActive(null);
+        return;
+      }
+      const chosen = list.find((r) => r.id === requested);
+      if (!chosen) {
+        setError("That roadmap no longer exists.");
+        setActive(null);
+        return;
+      }
       setActive(chosen);
       applyForm(chosen);
+      return;
+    }
+    if (list[0]) {
+      setActive(list[0]);
+      applyForm(list[0]);
     }
   }
 
@@ -157,13 +172,19 @@ function RoadmapStudio() {
 
   async function patch(milestone_index: number, task_id: string, body: object) {
     if (!active) return;
-    const row = await api<Roadmap>(`/api/career/roadmap/${active.id}/tasks`, {
-      method: "PATCH",
-      body: JSON.stringify({ milestone_index, task_id, ...body }),
-    });
-    setActive(row);
-    applyForm(row);
-    setRows((prev) => prev.map((r) => (r.id === row.id ? row : r)));
+    setError("");
+    try {
+      const row = await api<Roadmap>(`/api/career/roadmap/${active.id}/tasks`, {
+        method: "PATCH",
+        body: JSON.stringify({ milestone_index, task_id, ...body }),
+      });
+      setActive(row);
+      applyForm(row);
+      setRows((prev) => prev.map((r) => (r.id === row.id ? row : r)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update that task");
+      await load(active.id);
+    }
   }
 
   return (
@@ -264,9 +285,11 @@ function RoadmapStudio() {
                         <div className="flex-1">
                           <div className="font-medium">{t.title}</div>
                           <p className="text-sm text-mist">{t.objective}</p>
-                          <p className="mt-2 text-xs text-mist">
-                            Resource: {t.resource} · Exercise: {t.exercise} · Project: {t.project}
-                          </p>
+                          {t.resource && (
+                            <p className="mt-2 text-xs text-mist">
+                              Resource: {t.resource} · Exercise: {t.exercise} · Project: {t.project}
+                            </p>
+                          )}
                           <div className="mt-2 flex gap-2">
                             <input
                               className={`${inputClass} max-w-xs`}
@@ -282,6 +305,31 @@ function RoadmapStudio() {
                     </li>
                   ))}
                 </ul>
+                <form
+                  className="mt-3 flex gap-2"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    const text = (customTask[mi] || "").trim();
+                    if (!text) return;
+                    setError("");
+                    try {
+                      await patch(mi, "", { action: "add", custom_text: text });
+                      setCustomTask((prev) => ({ ...prev, [mi]: "" }));
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : "Could not add the task");
+                    }
+                  }}
+                >
+                  <input
+                    className={`${inputClass} max-w-sm`}
+                    value={customTask[mi] || ""}
+                    onChange={(e) => setCustomTask((prev) => ({ ...prev, [mi]: e.target.value }))}
+                    placeholder="Add your own task for this week…"
+                  />
+                  <Button type="submit" variant="ghost">
+                    Add
+                  </Button>
+                </form>
               </Card>
             ))}
           </div>

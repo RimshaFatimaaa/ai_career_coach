@@ -8,6 +8,8 @@ import { api } from "@/lib/api";
 
 type Msg = { role: string; content: string };
 type Convo = { id: number; title: string };
+type Source = { title?: string; category?: string };
+type SuggestedMemory = { key: string; value: string; category?: string };
 
 export default function CoachPage() {
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -18,6 +20,8 @@ export default function CoachPage() {
   const [busy, setBusy] = useState(false);
   const [demo, setDemo] = useState(false);
   const [memNote, setMemNote] = useState("");
+  const [sources, setSources] = useState<Source[]>([]);
+  const [pendingMemories, setPendingMemories] = useState<SuggestedMemory[]>([]);
 
   async function loadConvos() {
     try {
@@ -39,19 +43,58 @@ export default function CoachPage() {
   }, []);
 
   async function openConvo(id: number) {
-    const row = await api<{ messages: Msg[] }>(`/api/career/conversations/${id}`);
-    setCid(id);
-    setMessages(row.messages?.length ? row.messages : []);
+    setError("");
+    try {
+      const row = await api<{ messages: Msg[] }>(`/api/career/conversations/${id}`);
+      setCid(id);
+      setMessages(row.messages?.length ? row.messages : []);
+      setSources([]);
+      setPendingMemories([]);
+      setDemo(false);
+      setMemNote("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not open that conversation");
+    }
+  }
+
+  async function confirmMemories() {
+    setError("");
+    try {
+      await api("/api/career/memories/confirm", {
+        method: "POST",
+        body: JSON.stringify({ memories: pendingMemories }),
+      });
+      setMemNote(`Saved to career memory: ${pendingMemories.map((x) => x.key).join(", ")}`);
+      setPendingMemories([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save to memory");
+    }
   }
 
   function newChat() {
     setCid(null);
+    setSources([]);
+    setPendingMemories([]);
+    setDemo(false);
+    setMemNote("");
     setMessages([
       {
         role: "assistant",
         content: "New conversation. Your profile and career memory still apply.",
       },
     ]);
+  }
+
+  async function removeConvo(c: Convo) {
+    if (!confirm(`Delete “${c.title || "this conversation"}”?`)) return;
+    setError("");
+    try {
+      await api(`/api/career/conversations/${c.id}`, { method: "DELETE" });
+      if (cid === c.id) newChat();
+      await loadConvos();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete the conversation");
+    }
   }
 
   async function send(e: FormEvent) {
@@ -68,7 +111,8 @@ export default function CoachPage() {
         reply: string;
         conversation_id: number;
         demo?: boolean;
-        saved_memories?: { key: string }[];
+        sources?: Source[];
+        suggested_memories?: SuggestedMemory[];
       }>("/api/career/chat", {
         method: "POST",
         body: JSON.stringify({ message: userMsg, conversation_id: cid }),
@@ -76,11 +120,12 @@ export default function CoachPage() {
       setCid(res.conversation_id);
       setDemo(Boolean(res.demo));
       setMessages((m) => [...m, { role: "assistant", content: res.reply }]);
-      if (res.saved_memories?.length) {
-        setMemNote(`Saved to career memory: ${res.saved_memories.map((x) => x.key).join(", ")}`);
-      }
+      setSources(res.sources || []);
+      setPendingMemories(res.suggested_memories || []);
       loadConvos();
     } catch (err) {
+      setMessages((m) => (m[m.length - 1]?.content === userMsg ? m.slice(0, -1) : m));
+      setText(userMsg);
       setError(err instanceof Error ? err.message : "Chat failed");
     } finally {
       setBusy(false);
@@ -117,15 +162,25 @@ export default function CoachPage() {
           </Button>
           <div className="text-xs uppercase tracking-wider text-mist">History</div>
           {convos.map((c) => (
-            <button
+            <div
               key={c.id}
-              onClick={() => openConvo(c.id)}
-              className={`block w-full truncate rounded-lg px-2 py-1.5 text-left text-sm ${
-                cid === c.id ? "bg-cream" : "hover:bg-cream/60"
-              }`}
+              className={`group flex items-center gap-1 rounded-lg pr-1 ${cid === c.id ? "bg-cream" : "hover:bg-cream/60"}`}
             >
-              {c.title || "Untitled"}
-            </button>
+              <button
+                onClick={() => openConvo(c.id)}
+                className="min-w-0 flex-1 truncate px-2 py-1.5 text-left text-sm"
+              >
+                {c.title || "Untitled"}
+              </button>
+              <button
+                onClick={() => removeConvo(c)}
+                aria-label={`Delete ${c.title || "conversation"}`}
+                title="Delete conversation"
+                className="px-1 text-xs text-mist opacity-0 transition-opacity hover:text-copper focus:opacity-100 group-hover:opacity-100"
+              >
+                ✕
+              </button>
+            </div>
           ))}
           {convos.length === 0 && <p className="text-xs text-mist">No saved chats yet.</p>}
         </Card>
@@ -142,6 +197,31 @@ export default function CoachPage() {
               </div>
             ))}
           </div>
+          {sources.length > 0 && (
+            <p className="mt-3 text-xs text-mist">
+              Grounded in: {sources.map((s) => s.title).filter(Boolean).join(" · ")}
+            </p>
+          )}
+          {pendingMemories.length > 0 && (
+            <div className="mt-3 rounded-xl border border-copper/30 bg-copper/5 px-3 py-2 text-xs">
+              <p className="text-mist">Remember this for future conversations?</p>
+              <ul className="mt-1 space-y-0.5">
+                {pendingMemories.map((m) => (
+                  <li key={m.key}>
+                    <span className="text-mist">{m.key}:</span> {m.value}
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-2 flex gap-2">
+                <Button variant="ghost" onClick={confirmMemories}>
+                  Save to memory
+                </Button>
+                <Button variant="ghost" onClick={() => setPendingMemories([])}>
+                  Not now
+                </Button>
+              </div>
+            </div>
+          )}
           <form onSubmit={send} className="mt-4 flex gap-2">
             <input
               className={inputClass}

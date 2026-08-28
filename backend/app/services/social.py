@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from app.services.llm import gateway, wrap_untrusted
+from app.services.llm import SAFETY_PREAMBLE, gateway, wrap_untrusted
 
 
 def github_handle(value: str) -> str:
@@ -31,8 +31,16 @@ def fetch_github(handle: str) -> dict[str, Any]:
             f"https://api.github.com/users/{user_name}/repos",
             params={"sort": "updated", "per_page": 12, "type": "owner"},
         )
+        if repos_res.status_code == 403:
+            # Almost always the unauthenticated hourly rate limit. Falling
+            # through would produce an import that looks fine but is built on
+            # zero repositories.
+            raise RuntimeError("GitHub is rate limiting this server. Try again in a few minutes.")
+        repos_res.raise_for_status()
         repos_payload = repos_res.json()
-        repos = repos_payload if isinstance(repos_payload, list) else []
+        if not isinstance(repos_payload, list):
+            raise RuntimeError("GitHub returned an unexpected response for that account.")
+        repos = repos_payload
     public_repos = []
     languages: dict[str, int] = {}
     for repo in repos:
@@ -68,7 +76,7 @@ def fetch_github(handle: str) -> dict[str, Any]:
     }
 
 
-def analyze_import(kind: str, payload: dict[str, Any], profile_text: str) -> dict[str, Any]:
+def analyze_import(kind: str, payload: dict[str, Any], profile_text: str, plan: str = "free") -> dict[str, Any]:
     fallback = {
         "summary": payload.get("bio") or "Public profile captured for review.",
         "suggested_skills": payload.get("languages") or [],
@@ -90,7 +98,8 @@ def analyze_import(kind: str, payload: dict[str, Any], profile_text: str) -> dic
     messages = [
         {
             "role": "system",
-            "content": "You extract career facts from a public/pasted profile. "
+            "content": SAFETY_PREAMBLE
+            + "\nYou extract career facts from a public/pasted profile. "
             "Return JSON: summary, suggested_skills (list of strings), "
             "suggested_projects ([{name, description}]), suggested_experience ([{title, company, notes}]), "
             "gaps_vs_profile (list of strings), notes (list). "
@@ -108,7 +117,7 @@ def analyze_import(kind: str, payload: dict[str, Any], profile_text: str) -> dic
             ),
         },
     ]
-    data = gateway.complete_json(messages, task="extract", plan="pro")
+    data = gateway.complete_json(messages, task="extract", plan=plan or "free")
     if not isinstance(data, dict):
         return fallback
     data.setdefault("suggested_skills", fallback["suggested_skills"])

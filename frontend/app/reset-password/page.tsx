@@ -32,7 +32,7 @@ function ResetForm() {
       subtitle="This link works once and expires after an hour."
       submitLabel="Update password"
       extra={
-        <Field label="New password (min 8)">
+        <Field label="New password (min 8, needs a letter and a number)">
           <PasswordInput name="password" minLength={8} required autoComplete="new-password" />
         </Field>
       }

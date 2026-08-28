@@ -20,10 +20,12 @@ def get_current_user(
 ) -> User:
     if not creds:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
-    user_id = decode_token(creds.credentials)
+    user_id, epoch = decode_token(creds.credentials)
     user = db.get(User, user_id)
     if not user or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid session")
+    if epoch != int(user.session_epoch or 0):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired. Sign in again.")
     return user
 
 

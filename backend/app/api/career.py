@@ -15,61 +15,104 @@ from app.agents.career import (
 from app.agents.graph import classify_intent, run_career_chat
 from app.deps import CurrentUser, DbDep
 from app.models import Conversation, Roadmap
-from app.schemas import ChatIn, RoadmapIn, RoadmapTaskPatch, SkillGapIn
-from app.services.billing import limits_for
+from app.schemas import ChatIn, MemoryConfirmIn, RoadmapIn, RoadmapTaskPatch, SkillGapIn
+from app.services.billing import assert_within_limit, consume, limits_for
 from app.services.catalog import collect_profile_skills, get_role, is_catalog_role, roadmap_catalog_mismatch
 from app.services.profile import ensure_profile, maybe_store_memory, memory_text, profile_to_text, recompute_scores
 from app.services.rag import format_context, retrieve
 
 router = APIRouter(prefix="/api/career", tags=["career"])
 
+DEFAULT_CONVERSATION_TITLE = "Career chat"
+MAX_STORED_TURNS = 80
+
 
 @router.post("/chat")
 def chat(payload: ChatIn, user: CurrentUser, db: DbDep):
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(400, "Type a question for the coach.")
+    assert_within_limit(db, user, "career_chats")
     profile = ensure_profile(db, user)
     convo = None
     if payload.conversation_id:
+        # Silently opening a new thread here made a stale tab look like it had
+        # resumed the old conversation.
         convo = db.query(Conversation).filter_by(id=payload.conversation_id, user_id=user.id).first()
-    if not convo:
-        convo = Conversation(user_id=user.id, messages=[])
-        db.add(convo)
-        db.commit()
-        db.refresh(convo)
-    hits = retrieve(db, payload.message, k=3, category=None)
+        if not convo:
+            raise HTTPException(404, "That conversation no longer exists. Start a new one.")
+    hits = retrieve(db, message, k=3, category=None)
     state = run_career_chat(
         {
             "user_id": user.id,
-            "message": payload.message,
+            "message": message,
             "profile_text": profile_to_text(user, profile),
-            "memory_text": memory_text(db, user.id),
+            "memory_text": memory_text(db, user),
             "rag_context": format_context(hits),
-            "intent": classify_intent(payload.message),
+            "intent": classify_intent(message),
             "plan": user.plan,
             "advanced": bool(limits_for(user).get("advanced_analysis")),
-            "history": list(convo.messages or [])[-12:],
+            "history": list(convo.messages or [])[-12:] if convo else [],
         }
     )
+    reply = state.get("reply") or ""
+    if reply.startswith("I could not reach the language model"):
+        # A transport failure is not a coaching turn and is not worth a credit.
+        raise HTTPException(503, "The language model could not be reached. Try again in a moment.")
+    demo = bool(state.get("demo"))
+    # Take the credit before writing the thread so a second request at cap-1
+    # cannot persist an extra conversation after the first commit.
+    if not demo:
+        consume(db, user, "career_chats")
+    # Created only once there is a reply to store, so a failure mid-request
+    # does not leave an empty thread in the user's history.
+    if convo is None:
+        convo = Conversation(user_id=user.id, messages=[])
+        db.add(convo)
     messages = list(convo.messages or [])
-    messages.append({"role": "user", "content": payload.message})
+    messages.append({"role": "user", "content": message})
     messages.append({"role": "assistant", "content": state.get("reply")})
+    if len(messages) > MAX_STORED_TURNS:
+        messages = messages[-MAX_STORED_TURNS:]
     convo.messages = messages
     flag_modified(convo, "messages")
-    convo.title = payload.message[:72]
+    # The first question names the thread; later turns must not rewrite it.
+    if not convo.title or convo.title == DEFAULT_CONVERSATION_TITLE:
+        convo.title = message[:72]
     db.commit()
-    saved_memories = []
+    db.refresh(convo)
+
+    suggested_memories = []
     if limits_for(user).get("career_memory"):
-        for mem in extract_memories(payload.message):
-            maybe_store_memory(db, user, mem["key"], mem["value"], mem["category"])
-            saved_memories.append(mem)
+        # Offered, not stored. Saving silently on every turn contradicted the
+        # promise that the coach asks before remembering something.
+        suggested_memories = extract_memories(message, plan=user.plan)
     return {
         "conversation_id": convo.id,
         "reply": state.get("reply"),
         "intent": state.get("intent"),
-        "demo": state.get("demo"),
+        "demo": demo,
+        "metered": not demo,
         "sources": hits,
-        "saved_memories": saved_memories,
+        "suggested_memories": suggested_memories,
         "disclaimer": "Career guidance is personalized to your profile and is not a guarantee of outcomes.",
     }
+
+
+@router.post("/memories/confirm")
+def confirm_memories(payload: MemoryConfirmIn, user: CurrentUser, db: DbDep):
+    """Persist memories the coach offered and the user accepted."""
+    if not limits_for(user).get("career_memory"):
+        raise HTTPException(402, "Career memory is on Pro and Premium")
+    saved = []
+    for mem in payload.memories:
+        key = mem.key.strip()
+        value = mem.value.strip()
+        if not key or not value:
+            continue
+        maybe_store_memory(db, user, key, value, (mem.category or "direction").strip() or "direction")
+        saved.append({"key": key, "value": value, "category": mem.category})
+    return {"saved": saved}
 
 
 @router.get("/conversations")
@@ -104,17 +147,20 @@ def delete_convo(cid: int, user: CurrentUser, db: DbDep):
 
 @router.post("/skill-gap")
 def skill_gap(payload: SkillGapIn, user: CurrentUser, db: DbDep):
+    # A role outside the catalog costs a model call, so this is metered like
+    # every other feature that can reach a provider.
+    assert_within_limit(db, user, "skill_gap_analyses")
+    consume(db, user, "skill_gap_analyses")
     profile = ensure_profile(db, user)
     owned = collect_profile_skills(profile)
     if payload.compare_role:
-        result = compare_roles(owned, payload.target_role, payload.compare_role)
-        return result
-    gaps = analyze_skill_gap(owned, payload.target_role)
+        return compare_roles(owned, payload.target_role, payload.compare_role, plan=user.plan)
+    gaps = analyze_skill_gap(owned, payload.target_role, plan=user.plan)
     readiness = readiness_from_gaps(gaps)
     breakdown = fit_breakdown(gaps, readiness)
     return {
         "target_role": payload.target_role,
-        "role_label": get_role(payload.target_role)["label"],
+        "role_label": get_role(payload.target_role, plan=user.plan)["label"],
         "readiness": readiness,
         "gaps": gaps,
         "fit_meaning": breakdown["formula"],
@@ -127,6 +173,46 @@ def _is_skill_plan(gaps: list) -> bool:
     return any(isinstance(g, dict) and (g.get("mode") == "skill" or g.get("target") == "Skill focus") for g in (gaps or []))
 
 
+def _merge_roadmap_progress(old_milestones: list, new_milestones: list) -> list:
+    """Keep completions, deadlines, and custom tasks when the catalog is rebuilt."""
+    old_by_id: dict[str, dict] = {}
+    custom_by_week: dict[int, list] = {}
+    for milestone in old_milestones or []:
+        week = int(milestone.get("week") or milestone.get("month") or 0)
+        for task in milestone.get("tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            if (task.get("kind") or "") == "custom":
+                custom_by_week.setdefault(week, []).append(dict(task))
+                continue
+            tid = str(task.get("id") or "")
+            if tid:
+                old_by_id[tid] = task
+    merged = []
+    for milestone in new_milestones or []:
+        row = dict(milestone)
+        week = int(row.get("week") or row.get("month") or 0)
+        tasks = []
+        for task in row.get("tasks") or []:
+            item = dict(task)
+            prev = old_by_id.get(str(item.get("id") or ""))
+            if prev:
+                item["completed"] = bool(prev.get("completed"))
+                if prev.get("deadline"):
+                    item["deadline"] = prev.get("deadline")
+            tasks.append(item)
+        for extra in custom_by_week.pop(week, []):
+            tasks.append(extra)
+        row["tasks"] = tasks
+        merged.append(row)
+    leftovers = [t for batch in custom_by_week.values() for t in batch]
+    if leftovers and merged:
+        last = dict(merged[-1])
+        last["tasks"] = list(last.get("tasks") or []) + leftovers
+        merged[-1] = last
+    return merged
+
+
 def _refresh_stale_roadmap(db, row: Roadmap, user) -> Roadmap:
     if _is_skill_plan(row.skill_gap or []):
         return row
@@ -136,9 +222,10 @@ def _refresh_stale_roadmap(db, row: Roadmap, user) -> Roadmap:
         return row
     profile = ensure_profile(db, user)
     owned = collect_profile_skills(profile)
-    gaps = analyze_skill_gap(owned, row.target_role)
+    gaps = analyze_skill_gap(owned, row.target_role, plan=user.plan)
+    rebuilt = build_roadmap(gaps, row.duration_months, row.target_role)
     row.skill_gap = gaps
-    row.milestones = build_roadmap(gaps, row.duration_months, row.target_role)
+    row.milestones = _merge_roadmap_progress(row.milestones or [], rebuilt)
     flag_modified(row, "skill_gap")
     flag_modified(row, "milestones")
     db.commit()
@@ -151,12 +238,14 @@ def create_roadmap(payload: RoadmapIn, user: CurrentUser, db: DbDep):
     topic = (payload.focus_skill or payload.target_role or "").strip()
     if not topic:
         raise HTTPException(400, "Enter a skill or career to plan for.")
+    assert_within_limit(db, user, "roadmaps")
+    consume(db, user, "roadmaps")
     unit = (payload.duration_unit or "months").strip().lower()
     value = payload.duration_value if payload.duration_value else payload.duration_months
     if is_catalog_role(topic):
         profile = ensure_profile(db, user)
         owned = collect_profile_skills(profile)
-        gaps = analyze_skill_gap(owned, topic)
+        gaps = analyze_skill_gap(owned, topic, plan=user.plan)
         title = topic
         focus = ""
     else:
@@ -231,30 +320,35 @@ def patch_task(rid: int, payload: RoadmapTaskPatch, user: CurrentUser, db: DbDep
     if not row:
         raise HTTPException(404, "Roadmap not found")
     milestones = list(row.milestones or [])
-    if payload.milestone_index >= len(milestones):
+    # The lower bound matters: Python would happily let -1 edit the last week.
+    if not 0 <= payload.milestone_index < len(milestones):
         raise HTTPException(400, "Invalid milestone")
     milestone = dict(milestones[payload.milestone_index])
     tasks = list(milestone.get("tasks") or [])
     action = payload.action or ("complete" if payload.completed is not None else None)
     if action == "add":
-        skill = (payload.custom_text or "this skill").strip()
-        weeks = max(1, len(milestones))
-        gaps = skill_focus_rows(skill)
-        row.target_role = skill
-        row.skill_gap = gaps
-        row.milestones = build_roadmap(
-            gaps,
-            duration_months=row.duration_months,
-            target_role=skill,
-            focus_skill=skill,
-            duration_unit="weeks",
-            duration_value=weeks,
+        # Appends one task to the chosen week. This used to rebuild the whole
+        # roadmap and rename target_role, silently discarding the user's plan.
+        skill = (payload.custom_text or "").strip()
+        if not skill:
+            raise HTTPException(400, "Describe the task you want to add.")
+        existing_ids = {t.get("id") for m in milestones for t in (m.get("tasks") or [])}
+        n = 1
+        while f"m{payload.milestone_index + 1}-custom{n}" in existing_ids:
+            n += 1
+        tasks.append(
+            {
+                "id": f"m{payload.milestone_index + 1}-custom{n}",
+                "title": skill[:160],
+                "skill": skill[:80],
+                "day": "Anytime",
+                "objective": skill,
+                "priority": "medium",
+                "deadline": payload.deadline or milestone.get("title") or "",
+                "completed": False,
+                "kind": "custom",
+            }
         )
-        flag_modified(row, "milestones")
-        flag_modified(row, "skill_gap")
-        db.commit()
-        recompute_scores(db, user)
-        return _roadmap_out(row)
     else:
         found = False
         new_tasks = []
@@ -271,7 +365,7 @@ def patch_task(rid: int, payload: RoadmapTaskPatch, user: CurrentUser, db: DbDep
             if payload.deadline is not None:
                 t["deadline"] = payload.deadline
             new_tasks.append(t)
-        if not found and action != "add":
+        if not found:
             raise HTTPException(404, "Task not found")
         tasks = new_tasks
     milestone["tasks"] = tasks

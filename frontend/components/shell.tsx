@@ -5,6 +5,8 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   ArrowLeft,
+  Brain,
+  Cable,
   FileText,
   GitBranch,
   LayoutDashboard,
@@ -17,7 +19,7 @@ import {
   UserRound,
 } from "lucide-react";
 import { BrandMark } from "@/components/pastel";
-import { api, clearSession } from "@/lib/api";
+import { api, clearSession, getToken } from "@/lib/api";
 
 const links = [
   { href: "/app", label: "Dashboard", icon: LayoutDashboard },
@@ -25,8 +27,10 @@ const links = [
   { href: "/app/coach", label: "Career coach", icon: MessageSquare },
   { href: "/app/resume", label: "Resume studio", icon: FileText },
   { href: "/app/interview", label: "Interview coach", icon: Mic },
+  { href: "/app/memory", label: "Career memory", icon: Brain },
   { href: "/app/insights", label: "Insights", icon: LineChart },
   { href: "/app/imports", label: "LinkedIn / GitHub", icon: GitBranch },
+  { href: "/app/mcp", label: "MCP tools", icon: Cable },
   { href: "/app/settings", label: "Settings", icon: Settings },
 ];
 
@@ -41,14 +45,26 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       router.replace("/login");
       return;
     }
-    setUser(JSON.parse(raw));
+    try {
+      setUser(JSON.parse(raw));
+    } catch {
+      clearSession();
+      router.replace("/login");
+      return;
+    }
     api<{ full_name: string; plan: string; role: string }>("/api/auth/me")
       .then((me) => {
         setUser(me);
-        const stored = JSON.parse(localStorage.getItem("cc_user") || "{}");
-        localStorage.setItem("cc_user", JSON.stringify({ ...stored, ...me }));
+        try {
+          const stored = JSON.parse(localStorage.getItem("cc_user") || "{}");
+          localStorage.setItem("cc_user", JSON.stringify({ ...stored, ...me }));
+        } catch {
+          localStorage.setItem("cc_user", JSON.stringify(me));
+        }
       })
-      .catch(() => router.replace("/login"));
+      .catch(() => {
+        if (!getToken()) router.replace("/login");
+      });
   }, [router]);
 
   if (!user) return <div className="grid min-h-screen place-items-center text-mist">Loading atelier…</div>;
@@ -99,9 +115,14 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           <button
             type="button"
             className="mt-3 flex cursor-pointer items-center gap-2 text-xs text-[#8b83a3] hover:text-[#3d3453]"
-            onClick={() => {
+            onClick={async () => {
+              try {
+                await api("/api/auth/logout", { method: "POST" });
+              } catch {
+                /* local sign-out still has to happen */
+              }
               clearSession();
-              router.push("/");
+              router.push("/login");
             }}
           >
             <LogOut size={14} /> Sign out

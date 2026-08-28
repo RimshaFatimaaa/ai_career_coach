@@ -1,7 +1,10 @@
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from app.services.passwords import MIN_LENGTH as PASSWORD_MIN_LENGTH
+from app.services.passwords import validate_password
 
 
 class TokenOut(BaseModel):
@@ -12,9 +15,11 @@ class TokenOut(BaseModel):
 
 class RegisterIn(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8)
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH)
     full_name: str
     accept_terms: bool = False
+
+    _check_password = field_validator("password")(validate_password)
 
 
 class ForgotPasswordIn(BaseModel):
@@ -23,7 +28,9 @@ class ForgotPasswordIn(BaseModel):
 
 class ResetPasswordIn(BaseModel):
     token: str
-    password: str = Field(min_length=8)
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH)
+
+    _check_password = field_validator("password")(validate_password)
 
 
 class LoginIn(BaseModel):
@@ -85,6 +92,7 @@ class CareerGoals(BaseModel):
 
 
 class ProfileIn(BaseModel):
+    full_name: Optional[str] = None
     country: Optional[str] = None
     city: Optional[str] = None
     professional_status: Optional[str] = None
@@ -124,13 +132,23 @@ class ProfileOut(BaseModel):
 
 
 class ChatIn(BaseModel):
-    message: str
+    message: str = Field(min_length=1, max_length=8000)
     conversation_id: Optional[int] = None
 
 
+class SuggestedMemory(BaseModel):
+    key: str = Field(min_length=1, max_length=120)
+    value: str = Field(min_length=1, max_length=2000)
+    category: str = "direction"
+
+
+class MemoryConfirmIn(BaseModel):
+    memories: list[SuggestedMemory] = Field(default_factory=list, max_length=20)
+
+
 class SkillGapIn(BaseModel):
-    target_role: str
-    compare_role: Optional[str] = None
+    target_role: str = Field(min_length=1, max_length=120)
+    compare_role: Optional[str] = Field(default=None, max_length=120)
 
 
 class RoadmapIn(BaseModel):
@@ -143,7 +161,7 @@ class RoadmapIn(BaseModel):
 
 class RoadmapTaskPatch(BaseModel):
     milestone_index: int
-    task_id: str
+    task_id: str = ""
     completed: Optional[bool] = None
     deadline: Optional[str] = None
     custom_text: Optional[str] = None
@@ -173,7 +191,7 @@ class TailorIn(BaseModel):
 
 class ATSIn(BaseModel):
     resume_id: int
-    job_description: str = ""
+    job_description: str = Field(min_length=20, max_length=20000)
 
 
 class CoverLetterIn(BaseModel):
@@ -191,8 +209,19 @@ class InterviewStartIn(BaseModel):
 
 
 class InterviewAnswerIn(BaseModel):
-    answer: str
-    duration_ms: int = 0
+    answer: str = Field(min_length=1)
+    duration_ms: int = Field(default=0, ge=0, le=4 * 60 * 60 * 1000)
+
+    @field_validator("answer")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Answer cannot be empty. Say what you would say in the room.")
+        return value
+
+
+class AccountDeleteIn(BaseModel):
+    password: str
 
 
 class PlanUpdateIn(BaseModel):
@@ -222,12 +251,12 @@ class AdminPlanIn(BaseModel):
 
 
 class MemoryIn(BaseModel):
-    category: str
-    key: str
-    value: str
+    category: str = Field(max_length=64)
+    key: str = Field(min_length=1, max_length=120)
+    value: str = Field(min_length=1, max_length=2000)
     enabled: bool = True
 
 
 class MemoryUpdateIn(BaseModel):
-    value: Optional[str] = None
+    value: Optional[str] = Field(default=None, max_length=2000)
     enabled: Optional[bool] = None

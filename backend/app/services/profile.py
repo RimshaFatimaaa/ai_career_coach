@@ -92,10 +92,19 @@ def allowed_facts(user: User, profile: Profile) -> dict[str, list[str]]:
     }
 
 
-def memory_text(db: Session, user_id: int) -> str:
+def memory_text(db: Session, user: User) -> str:
+    """Memories injected into the coach prompt. Paid plans only.
+
+    Without the plan check a downgraded user keeps the personalization that
+    Pro is sold on.
+    """
+    from app.services.billing import limits_for
+
+    if not limits_for(user).get("career_memory"):
+        return ""
     rows = (
         db.query(CareerMemory)
-        .filter_by(user_id=user_id, enabled=True)
+        .filter_by(user_id=user.id, enabled=True)
         .all()
     )
     if not rows:
@@ -103,7 +112,7 @@ def memory_text(db: Session, user_id: int) -> str:
     return "\n".join(f"- [{m.category}] {m.key}: {m.value}" for m in rows)
 
 
-def maybe_store_memory(db: Session, user: User, key: str, value: str, category: str = "preference") -> None:
+def maybe_store_memory(db: Session, user: User, key: str, value: str, category: str = "direction") -> None:
     from app.services.billing import limits_for
 
     if not limits_for(user).get("career_memory"):
@@ -268,5 +277,5 @@ def dashboard_payload(db: Session, user: User) -> dict[str, Any]:
         },
         "due_reminders": due[:3],
         "profile_complete": profile_is_complete(profile),
-        "disclaimer": "Readiness is an AI-generated estimate for personal tracking, not a hiring guarantee.",
+        "disclaimer": "Readiness is a self-tracking estimate computed from your profile, resume, and mock scores. It is not a hiring prediction.",
     }
