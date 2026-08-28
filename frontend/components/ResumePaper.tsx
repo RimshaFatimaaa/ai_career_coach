@@ -33,6 +33,34 @@ function bullets(item: Record<string, unknown>) {
   return [...a, ...b].map(String).filter((x) => !blank(x));
 }
 
+// Mirrors TEMPLATE_LAYOUT and SECTION_LABEL_OVERRIDES in backend/app/services/export.py.
+// The preview and the download have to agree on order and wording.
+const TEMPLATE_LAYOUT: Record<string, string[]> = {
+  ats_classic: ["summary", "skills", "experience", "projects", "education"],
+  modern_ats: ["summary", "skills", "experience", "education", "projects"],
+  technical: ["skills", "projects", "experience", "education", "summary"],
+  graduate: ["education", "projects", "skills", "experience", "summary"],
+  executive: ["summary", "experience", "education", "skills", "projects"],
+  compact: ["summary", "experience", "skills", "education", "projects"],
+  portfolio: ["summary", "projects", "skills", "experience", "education"],
+  two_tone: ["summary", "experience", "projects", "skills", "education"],
+};
+
+const DEFAULT_SECTION_LABELS: Record<string, string> = {
+  summary: "Summary",
+  skills: "Skills",
+  experience: "Experience",
+  projects: "Projects",
+  education: "Education",
+};
+
+const SECTION_LABELS: Record<string, string> = {
+  "summary:executive": "Professional summary",
+  "skills:technical": "Technical skills",
+  "experience:executive": "Leadership & experience",
+  "projects:portfolio": "Selected work",
+};
+
 const THEMES: Record<string, { accent: string; header: string; name: string; lined: boolean; compact: boolean; center: boolean }> = {
   ats_classic: { accent: "#1c1c1c", header: "plain", name: "text-[34px]", lined: true, compact: false, center: false },
   modern_ats: { accent: "#b05226", header: "banner", name: "text-[30px]", lined: false, compact: false, center: true },
@@ -84,20 +112,8 @@ export function ResumePaper({
   const headline = contact.headline || targetRole || "";
   const meta = [contact.email, contact.phone, contact.location, contact.links].filter((x) => !blank(x)).join("  ·  ");
 
-  const order =
-    template === "technical"
-      ? ["skills", "projects", "experience", "education", "summary"]
-      : template === "graduate"
-        ? ["education", "projects", "skills", "experience", "summary"]
-        : template === "executive"
-          ? ["summary", "experience", "education", "skills", "projects"]
-          : template === "portfolio"
-            ? ["summary", "projects", "skills", "experience", "education"]
-            : template === "compact"
-              ? ["summary", "experience", "skills", "education", "projects"]
-              : template === "two_tone"
-                ? ["summary", "experience", "projects", "skills", "education"]
-                : ["summary", "skills", "experience", "projects", "education"];
+  const order = TEMPLATE_LAYOUT[template] || TEMPLATE_LAYOUT.ats_classic;
+  const label = (section: string) => SECTION_LABELS[`${section}:${template}`] || DEFAULT_SECTION_LABELS[section];
 
   const header = (
     <header className={theme.header === "banner" ? "px-10 py-7 text-white sm:px-12" : "px-10 pb-5 pt-12 sm:px-14"} style={theme.header === "banner" ? { background: theme.accent } : undefined}>
@@ -116,14 +132,14 @@ export function ResumePaper({
       {order.map((section) => {
         if (section === "summary") {
           return (
-            <Section key={section} title={template === "executive" ? "Professional profile" : "Summary"} accent={theme.accent} compact={theme.compact}>
+            <Section key={section} title={label(section)} accent={theme.accent} compact={theme.compact}>
               <p>{summary || "Add a short professional summary from facts on your career profile."}</p>
             </Section>
           );
         }
         if (section === "skills" && skills.length) {
           return (
-            <Section key={section} title={template === "technical" ? "Technical skills" : "Skills"} accent={theme.accent} compact={theme.compact}>
+            <Section key={section} title={label(section)} accent={theme.accent} compact={theme.compact}>
               <ul className="space-y-1">
                 {skills.map((s) => (
                   <li key={s.group}>
@@ -138,7 +154,7 @@ export function ResumePaper({
         if (section === "experience") {
           const rows = experience.filter((e) => !blank(e.title) || !blank(e.company));
           return (
-            <Section key={section} title={template === "executive" ? "Leadership & experience" : "Experience"} accent={theme.accent} compact={theme.compact}>
+            <Section key={section} title={label(section)} accent={theme.accent} compact={theme.compact}>
               {rows.length === 0 ? (
                 <p className="text-mist">No roles on file yet. Add internships, freelance, studio, teaching, or volunteer work.</p>
               ) : (
@@ -169,7 +185,7 @@ export function ResumePaper({
         if (section === "education") {
           const rows = education.filter((e) => !blank(e.degree) || !blank(e.institution));
           return (
-            <Section key={section} title="Education" accent={theme.accent} compact={theme.compact}>
+            <Section key={section} title={label(section)} accent={theme.accent} compact={theme.compact}>
               {rows.length === 0 ? (
                 <p className="text-mist">Add a degree or program on your career profile.</p>
               ) : (
@@ -197,7 +213,7 @@ export function ResumePaper({
           const rows = projects.filter((p) => !blank(p.name));
           if (!rows.length) return null;
           return (
-            <Section key={section} title={template === "portfolio" ? "Selected work" : "Projects"} accent={theme.accent} compact={theme.compact}>
+            <Section key={section} title={label(section)} accent={theme.accent} compact={theme.compact}>
               <div className="space-y-3">
                 {rows.map((item, i) => (
                   <div key={i}>

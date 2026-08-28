@@ -6,6 +6,13 @@ import { PageTitle } from "@/components/shell";
 import { Button, Card, ErrorText, Score } from "@/components/ui";
 import { api } from "@/lib/api";
 
+type DueReminder = {
+  id: number;
+  title: string;
+  due_at: string | null;
+  overdue: boolean;
+};
+
 type Dash = {
   career_goal: string;
   readiness: number;
@@ -15,9 +22,15 @@ type Dash = {
   roadmap_progress: string | null;
   next_action: string;
   counts: { resumes: number; interviews: number; roadmaps: number };
+  due_reminders: DueReminder[];
   profile_complete: boolean;
   disclaimer: string;
 };
+
+function dueLabel(due: string | null) {
+  if (!due) return "No date";
+  return new Date(due).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 
 export default function DashboardPage() {
   const [data, setData] = useState<Dash | null>(null);
@@ -69,10 +82,10 @@ export default function DashboardPage() {
           </div>
         </Card>
         <Card>
-          <Score value={data.readiness} label="Career readiness" />
+          <Score value={data.readiness} label="Career readiness" hint={`${Math.round(data.readiness)} / 100 · skill fit + resume + interviews`} />
           <div className="mt-6 space-y-4">
-            <Score value={data.resume_health} label="Resume health" />
-            <Score value={data.interview_performance} label="Interview performance" />
+            <Score value={data.resume_health} label="Resume health" hint={`${Math.round(data.resume_health)} / 100 · resume completeness`} />
+            <Score value={data.interview_performance} label="Interview performance" hint={`${Math.round(data.interview_performance)} / 100 · average mock`} />
           </div>
           <p className="mt-4 text-xs text-mist">Start at 0. They rise as you build a resume, finish mocks, and follow a roadmap.</p>
         </Card>
@@ -112,6 +125,24 @@ export default function DashboardPage() {
           )}
         </Card>
       </div>
+      {data.due_reminders?.length > 0 && (
+        <Card className="mt-4">
+          <div className="text-xs uppercase tracking-[0.16em] text-mist">Coming up</div>
+          <ul className="mt-3 space-y-2">
+            {data.due_reminders.map((r) => (
+              <li key={r.id} className="flex items-baseline justify-between gap-4 text-sm">
+                <span>{r.title}</span>
+                <span className={r.overdue ? "shrink-0 text-copper" : "shrink-0 text-mist"}>
+                  {r.overdue ? "Overdue" : dueLabel(r.due_at)}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <Link href="/app/reminders" className="mt-4 inline-block text-sm text-copper">
+            All reminders →
+          </Link>
+        </Card>
+      )}
       <p className="mt-6 text-xs text-mist">{data.disclaimer}</p>
     </div>
   );

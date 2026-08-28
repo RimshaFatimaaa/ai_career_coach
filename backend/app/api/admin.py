@@ -53,7 +53,19 @@ def admin_set_plan(uid: int, payload: AdminPlanIn, admin: AdminUser, db: DbDep):
     user = db.get(User, uid)
     if not user:
         raise HTTPException(404, "User not found")
-    if payload.plan == "free":
+    previous = user.plan
+    # An admin override replaces whatever the customer is paying for, so any
+    # live subscription is cancelled rather than left billing for a plan the
+    # account no longer has.
+    reconciled = False
+    if payload.plan != previous:
         cancel_stripe_billing(user, required=False)
+        reconciled = True
     apply_plan(db, user, payload.plan)
-    return {"id": user.id, "plan": user.plan}
+    return {
+        "id": user.id,
+        "plan": user.plan,
+        "previous_plan": previous,
+        "billing_cancelled": reconciled,
+        "note": "Admin plan changes are granted directly; any Stripe subscription was cancelled.",
+    }

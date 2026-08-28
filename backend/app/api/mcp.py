@@ -11,6 +11,7 @@ from app.agents.career import analyze_skill_gap, readiness_from_gaps
 from app.deps import CurrentUser, DbDep
 from app.models import Resume
 from app.services.analytics import analytics_payload
+from app.services.billing import assert_within_limit, consume
 from app.services.catalog import collect_profile_skills
 from app.services.profile import dashboard_payload, ensure_profile, profile_to_text
 from app.services.reminders import list_reminders
@@ -73,8 +74,10 @@ def _run_tool(name: str, arguments: dict, user, db) -> Any:
         role = (arguments or {}).get("target_role") or ""
         if not role:
             raise HTTPException(400, "target_role is required")
+        assert_within_limit(db, user, "skill_gap_analyses")
+        consume(db, user, "skill_gap_analyses")
         profile = ensure_profile(db, user)
-        gaps = analyze_skill_gap(collect_profile_skills(profile), role)
+        gaps = analyze_skill_gap(collect_profile_skills(profile), role, plan=user.plan)
         return {"target_role": role, "readiness": readiness_from_gaps(gaps), "gaps": gaps[:12]}
     if name == "list_resumes":
         rows = db.query(Resume).filter_by(user_id=user.id, is_active=True).all()
@@ -84,6 +87,17 @@ def _run_tool(name: str, arguments: dict, user, db) -> Any:
     if name == "career_analytics":
         return analytics_payload(db, user)
     raise HTTPException(404, f"Unknown tool: {name}")
+
+
+# JSON-RPC 2.0 reserved codes. MCP clients parse these; an HTTP error body
+# from FastAPI is not something they can interpret.
+INVALID_PARAMS = -32602
+METHOD_NOT_FOUND = -32601
+INTERNAL_ERROR = -32603
+
+
+def _rpc_error(rpc_id, code: int, message: str) -> dict:
+    return {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": code, "message": message}}
 
 
 @router.get("/api/mcp/tools")
@@ -109,7 +123,13 @@ def mcp_rpc(payload: RpcIn, user: CurrentUser, db: DbDep):
         name = payload.params.get("name")
         arguments = payload.params.get("arguments") or payload.params.get("args") or {}
         if not name:
-            raise HTTPException(400, "params.name is required")
-        result = _run_tool(name, arguments, user, db)
+            return _rpc_error(payload.id, INVALID_PARAMS, "params.name is required")
+        try:
+            result = _run_tool(name, arguments, user, db)
+        except HTTPException as exc:
+            code = METHOD_NOT_FOUND if exc.status_code == 404 else INVALID_PARAMS
+            return _rpc_error(payload.id, code, str(exc.detail))
+        except Exception:
+            return _rpc_error(payload.id, INTERNAL_ERROR, f"Tool {name} failed")
         return {"jsonrpc": "2.0", "id": payload.id, "result": {"content": [{"type": "json", "json": result}]}}
-    raise HTTPException(400, f"Unsupported method {payload.method}")
+    return _rpc_error(payload.id, METHOD_NOT_FOUND, f"Unsupported method {payload.method}")

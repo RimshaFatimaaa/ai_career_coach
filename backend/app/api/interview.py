@@ -14,6 +14,24 @@ from app.services.voice import analyze_speech, synthesize_speech, transcribe_aud
 
 router = APIRouter(prefix="/api/interviews", tags=["interviews"])
 
+MAX_VOICE_BYTES = 8 * 1024 * 1024
+
+
+def _session_for_write(db, iid: int, user_id: int):
+    q = db.query(InterviewSession).filter_by(id=iid, user_id=user_id)
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        q = q.with_for_update()
+    return q.first()
+
+
+async def _read_audio(audio: UploadFile) -> bytes:
+    data = await audio.read(MAX_VOICE_BYTES + 1)
+    if len(data) > MAX_VOICE_BYTES:
+        raise HTTPException(413, "Recording is too large. Keep answers under 8MB.")
+    if len(data) < 256:
+        raise HTTPException(400, "Recording was empty. Record again, or type the answer.")
+    return data
+
 
 def _out(row: InterviewSession) -> dict:
     qs = list(row.questions or [])
@@ -113,10 +131,13 @@ def start(payload: InterviewStartIn, user: CurrentUser, db: DbDep):
         profile_to_text(user, profile),
         payload.job_description,
         avoid_prompts=avoid[:24],
+        plan=user.plan,
     )
     if questions:
         questions[0]["session_mode"] = mode
         questions[0]["session_total"] = questions[0].get("session_total") or count
+    consume(db, user, "mock_interviews")
+    consume(db, user, "interview_questions", count)
     row = InterviewSession(
         user_id=user.id,
         target_role=payload.target_role,
@@ -130,9 +151,19 @@ def start(payload: InterviewStartIn, user: CurrentUser, db: DbDep):
     db.add(row)
     db.commit()
     db.refresh(row)
-    consume(db, user, "mock_interviews")
-    consume(db, user, "interview_questions", count)
     return _out(row)
+
+
+def _require_voice_session(row, user) -> None:
+    """Guard every voice route, not just session creation.
+
+    Checking the entitlement only at /start let a user begin a voice mock,
+    downgrade, and keep using speech for the rest of the session.
+    """
+    if (getattr(row, "mode", "text") or "text") != "voice":
+        raise HTTPException(400, "Not a voice session")
+    if not limits_for(user).get("voice_interviews"):
+        raise HTTPException(402, "Voice interviews are on the Premium plan.")
 
 
 @router.get("/{iid}/speak")
@@ -140,8 +171,7 @@ def speak_question(iid: int, user: CurrentUser, db: DbDep):
     row = db.query(InterviewSession).filter_by(id=iid, user_id=user.id).first()
     if not row or row.status != "in_progress":
         raise HTTPException(400, "Interview is not in progress")
-    if (getattr(row, "mode", "text") or "text") != "voice":
-        raise HTTPException(400, "Not a voice session")
+    _require_voice_session(row, user)
     qs = row.questions or []
     if row.current_index >= len(qs):
         raise HTTPException(400, "No current question")
@@ -153,20 +183,21 @@ def speak_question(iid: int, user: CurrentUser, db: DbDep):
 
 @router.post("/{iid}/answer")
 def answer(iid: int, payload: InterviewAnswerIn, user: CurrentUser, db: DbDep):
-    row = db.query(InterviewSession).filter_by(id=iid, user_id=user.id).first()
+    row = _session_for_write(db, iid, user.id)
     if not row or row.status != "in_progress":
         raise HTTPException(400, "Interview is not in progress")
     qs = list(row.questions or [])
     if row.current_index >= len(qs):
         raise HTTPException(400, "No current question")
+    answer_text = payload.answer.strip()
     profile = ensure_profile(db, user)
     q = dict(qs[row.current_index])
-    q["answer"] = payload.answer
-    if payload.duration_ms:
-        q["voice"] = analyze_speech(payload.answer, payload.duration_ms)
+    if q.get("answer"):
+        raise HTTPException(409, "That question was already answered.")
+    q["answer"] = answer_text
     evaluation = evaluate_answer(
         q,
-        payload.answer,
+        answer_text,
         profile_to_text(user, profile),
         advanced=bool(limits_for(user).get("advanced_analysis")),
         plan=user.plan,
@@ -189,9 +220,8 @@ async def transcribe_voice(
     row = db.query(InterviewSession).filter_by(id=iid, user_id=user.id).first()
     if not row or row.status != "in_progress":
         raise HTTPException(400, "Interview is not in progress")
-    if (getattr(row, "mode", "text") or "text") != "voice":
-        raise HTTPException(400, "Not a voice session")
-    data = await audio.read()
+    _require_voice_session(row, user)
+    data = await _read_audio(audio)
     text = transcribe_audio(data, audio.filename or "answer.webm")
     if not text:
         raise HTTPException(400, "Could not transcribe the recording. Try again or type the answer.")
@@ -207,20 +237,21 @@ async def voice_answer(
     duration_ms: int = Form(0),
     transcript: str = Form(""),
 ):
-    row = db.query(InterviewSession).filter_by(id=iid, user_id=user.id).first()
+    row = _session_for_write(db, iid, user.id)
     if not row or row.status != "in_progress":
         raise HTTPException(400, "Interview is not in progress")
-    if (getattr(row, "mode", "text") or "text") != "voice":
-        raise HTTPException(400, "Not a voice session")
+    _require_voice_session(row, user)
     qs = list(row.questions or [])
     if row.current_index >= len(qs):
         raise HTTPException(400, "No current question")
-    data = await audio.read()
-    text = transcribe_audio(data, audio.filename or "answer.webm") or (transcript or "").strip()
+    data = await _read_audio(audio)
+    text = (transcript or "").strip() or transcribe_audio(data, audio.filename or "answer.webm")
     if not text:
         raise HTTPException(400, "Could not transcribe the recording. Try again or type the answer.")
     profile = ensure_profile(db, user)
     q = dict(qs[row.current_index])
+    if q.get("answer"):
+        raise HTTPException(409, "That question was already answered.")
     q["answer"] = text
     q["voice"] = analyze_speech(text, duration_ms)
     evaluation = evaluate_answer(
@@ -241,6 +272,10 @@ def end_early(iid: int, user: CurrentUser, db: DbDep):
     row = db.query(InterviewSession).filter_by(id=iid, user_id=user.id).first()
     if not row:
         raise HTTPException(404, "Interview not found")
+    if row.status != "in_progress":
+        # Re-ending used to rebuild the report and reset completed_at, quietly
+        # rewriting history for a session the user had already finished.
+        raise HTTPException(409, "This interview is already complete.")
     report = build_report(row.questions or [], row.target_role)
     row.report = report
     row.overall_score = report.get("overall")

@@ -57,6 +57,17 @@ export default function ResumeListPage() {
     }
   }
 
+  async function remove(row: Resume) {
+    if (!confirm(`Delete “${row.title}”? This frees a slot on your plan.`)) return;
+    setError("");
+    try {
+      await api(`/api/resumes/${row.id}`, { method: "DELETE" });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete");
+    }
+  }
+
   async function upload(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
@@ -127,20 +138,31 @@ export default function ResumeListPage() {
       </div>
       <div className="mt-6 space-y-2">
         {rows.map((r) => (
-          <Link
+          <div
             key={r.id}
-            href={`/app/resume/${r.id}`}
-            className="flex items-center justify-between rounded-2xl border border-ink/10 bg-white/70 px-5 py-4 hover:border-copper/40"
+            className="flex items-center justify-between gap-4 rounded-2xl border border-ink/10 bg-white/70 px-5 py-4 hover:border-copper/40"
           >
-            <div>
+            <Link href={`/app/resume/${r.id}`} className="min-w-0 flex-1">
               <div className="font-medium">{r.title}</div>
               <div className="text-xs text-mist">
                 {r.version_type} · {r.template} · {r.source}
                 {r.target_role ? ` · ${r.target_role}` : ""}
               </div>
+            </Link>
+            <div className="flex shrink-0 items-center gap-3">
+              <Link href={`/app/resume/${r.id}`} className="text-sm text-copper">
+                Open →
+              </Link>
+              <button
+                type="button"
+                className="text-sm text-mist hover:text-copper"
+                onClick={() => remove(r)}
+                aria-label={`Delete ${r.title}`}
+              >
+                Delete
+              </button>
             </div>
-            <span className="text-sm text-copper">Open →</span>
-          </Link>
+          </div>
         ))}
         {rows.length === 0 && <p className="text-sm text-mist">No resumes yet. Generate from your profile or upload one.</p>}
       </div>

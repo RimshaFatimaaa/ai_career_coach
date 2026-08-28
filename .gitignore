@@ -18,6 +18,7 @@ node_modules/
 out/
 dist/
 .turbo/
+*.tsbuildinfo
 
 # Uploads & generated files
 backend/storage/

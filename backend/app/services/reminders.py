@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.models import InterviewSession, Reminder, Roadmap, User
+
+# One generate call should never bury the user in reminders.
+MAX_GENERATED_PER_RUN = 20
+
+_WEEKDAY_INDEX = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+_WEEK_DAY_LABEL = re.compile(r"week\s*(\d+)\s*[·:,-]?\s*([A-Za-z]+)?", re.IGNORECASE)
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -16,6 +26,32 @@ def _aware(dt: datetime | None) -> datetime | None:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def parse_task_deadline(raw: str, anchor: datetime) -> datetime | None:
+    """Resolve a roadmap deadline to a real date.
+
+    Roadmap tasks store human labels like "Week 3 · Thursday", which
+    `fromisoformat` cannot read — every reminder used to collapse onto the same
+    fallback date. `anchor` is the roadmap start, so week 1 Monday is the first
+    Monday on or after it.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        return _aware(datetime.fromisoformat(raw.replace("Z", "+00:00")))
+    except ValueError:
+        pass
+    match = _WEEK_DAY_LABEL.search(raw)
+    if not match:
+        return None
+    week = max(1, int(match.group(1)))
+    weekday = _WEEKDAY_INDEX.get((match.group(2) or "monday").strip().lower(), 0)
+    start = _aware(anchor) or datetime.now(timezone.utc)
+    week_start = start + timedelta(days=(week - 1) * 7)
+    shift = (weekday - week_start.weekday()) % 7
+    return (week_start + timedelta(days=shift)).replace(hour=18, minute=0, second=0, microsecond=0)
 
 
 def _out(row: Reminder) -> dict[str, Any]:
@@ -56,8 +92,17 @@ def generate_from_activity(db: Session, user: User) -> list[dict[str, Any]]:
     created = 0
     existing = {(r.source, r.source_ref) for r in db.query(Reminder).filter_by(user_id=user.id, done=False).all()}
     now = datetime.now(timezone.utc)
-    roadmaps = db.query(Roadmap).filter_by(user_id=user.id).all()
+    # Saved roadmaps first, then most recent — a capped run should reflect the
+    # plans the user actually cares about.
+    roadmaps = (
+        db.query(Roadmap)
+        .filter_by(user_id=user.id)
+        .order_by(Roadmap.is_saved.desc(), Roadmap.updated_at.desc())
+        .all()
+    )
+    pending: list[tuple[datetime, str, str, str]] = []
     for roadmap in roadmaps:
+        anchor = _aware(roadmap.created_at) or now
         for mi, milestone in enumerate(roadmap.milestones or []):
             for task in milestone.get("tasks") or []:
                 if task.get("completed"):
@@ -65,26 +110,24 @@ def generate_from_activity(db: Session, user: User) -> list[dict[str, Any]]:
                 ref = f"roadmap:{roadmap.id}:{task.get('id')}"
                 if ("roadmap", ref) in existing:
                     continue
-                due = None
-                raw = str(task.get("deadline") or "")
-                if raw:
-                    try:
-                        due = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-                    except ValueError:
-                        due = now + timedelta(days=7)
-                else:
+                due = parse_task_deadline(str(task.get("deadline") or ""), anchor)
+                if due is None:
                     due = now + timedelta(days=5 + mi)
-                add_reminder(
-                    db,
-                    user,
-                    title=str(task.get("title") or task.get("skill") or "Roadmap task"),
-                    body=str(task.get("objective") or task.get("exercise") or "Continue this roadmap item."),
-                    due_at=due,
-                    source="roadmap",
-                    source_ref=ref,
+                pending.append(
+                    (
+                        due,
+                        ref,
+                        str(task.get("title") or task.get("skill") or "Roadmap task"),
+                        str(task.get("objective") or task.get("exercise") or "Continue this roadmap item."),
+                    )
                 )
-                created += 1
                 existing.add(("roadmap", ref))
+
+    # Soonest first, so the cap keeps what is actually due next.
+    pending.sort(key=lambda item: item[0])
+    for due, ref, title, body in pending[:MAX_GENERATED_PER_RUN]:
+        add_reminder(db, user, title=title, body=body, due_at=due, source="roadmap", source_ref=ref)
+        created += 1
     weak = (
         db.query(InterviewSession)
         .filter_by(user_id=user.id, status="completed")

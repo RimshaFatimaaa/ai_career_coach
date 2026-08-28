@@ -30,6 +30,20 @@ TEMPLATE_LAYOUT = {
     "two_tone": ["summary", "experience", "projects", "skills", "education"],
 }
 
+# Per-template section names. Every renderer reads this table so the preview,
+# the PDF, the DOCX and the markdown cannot drift apart.
+SECTION_LABEL_OVERRIDES = {
+    ("summary", "executive"): "Professional summary",
+    ("skills", "technical"): "Technical skills",
+    ("experience", "executive"): "Leadership & experience",
+    ("projects", "portfolio"): "Selected work",
+}
+
+
+def section_label(section: str, template: str) -> str:
+    return SECTION_LABEL_OVERRIDES.get((section, template)) or section.replace("_", " ").capitalize()
+
+
 TEMPLATE_COLOR = {
     "ats_classic": (28, 28, 28),
     "modern_ats": (176, 82, 38),
@@ -182,19 +196,19 @@ def render_pdf(content: dict[str, Any], template: str = "ats_classic") -> bytes:
 
     for section in TEMPLATE_LAYOUT[template]:
         if section == "summary" and _txt(content.get("summary")):
-            _heading(pdf, "Professional summary" if template == "executive" else "Summary", color)
+            _heading(pdf, section_label("summary", template), color)
             _write(pdf, content["summary"], size=10)
         elif section == "skills" and content.get("skills"):
-            _heading(pdf, "Technical skills" if template == "technical" else "Skills", color)
+            _heading(pdf, section_label("skills", template), color)
             _skills_block(pdf, content["skills"])
         elif section == "experience" and content.get("experience"):
-            _heading(pdf, "Leadership & experience" if template == "executive" else "Experience", color)
+            _heading(pdf, section_label("experience", template), color)
             _experience_block(pdf, content["experience"])
         elif section == "projects" and content.get("projects"):
-            _heading(pdf, "Selected work" if template == "portfolio" else "Projects", color)
+            _heading(pdf, section_label("projects", template), color)
             _projects_block(pdf, content["projects"])
         elif section == "education" and content.get("education"):
-            _heading(pdf, "Education", color)
+            _heading(pdf, section_label("education", template), color)
             _education_block(pdf, content["education"])
 
     return bytes(pdf.output())
@@ -254,12 +268,13 @@ def _education_block(pdf: FPDF, items: list) -> None:
         pdf.ln(1)
 
 
-def render_docx(content: dict[str, Any]) -> bytes:
+def render_docx(content: dict[str, Any], template: str = "ats_classic") -> bytes:
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Pt, RGBColor
 
     contact = content.get("contact") or {}
+    accent = RGBColor(*TEMPLATE_COLOR.get(template, TEMPLATE_COLOR["ats_classic"]))
     doc = Document()
     style = doc.styles["Normal"]
     style.font.name = "Calibri"
@@ -270,21 +285,38 @@ def render_docx(content: dict[str, Any]) -> bytes:
     run = name.add_run(str(contact.get("name") or "Resume"))
     run.bold = True
     run.font.size = Pt(22)
-    run.font.color.rgb = RGBColor(28, 28, 28)
+    run.font.color.rgb = accent
 
-    meta = "  |  ".join(str(x) for x in [contact.get("email"), contact.get("phone"), contact.get("location")] if x)
+    if contact.get("headline"):
+        head = doc.add_paragraph()
+        head.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        head.add_run(str(contact["headline"])).italic = True
+
+    meta = "  |  ".join(
+        str(x)
+        for x in [contact.get("email"), contact.get("phone"), contact.get("location"), contact.get("links")]
+        if x
+    )
     if meta:
         p = doc.add_paragraph(meta)
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    if content.get("summary"):
-        h = doc.add_heading("Summary", 1)
-        h.runs[0].font.color.rgb = RGBColor(28, 28, 28)
+    def heading(text: str) -> None:
+        h = doc.add_heading(text, 1)
+        if h.runs:
+            h.runs[0].font.color.rgb = accent
+
+    def write_summary() -> None:
+        if not content.get("summary"):
+            return
+        heading(section_label("summary", template))
         doc.add_paragraph(str(content["summary"]))
 
-    skills = content.get("skills")
-    if skills:
-        doc.add_heading("Skills", 1)
+    def write_skills() -> None:
+        skills = content.get("skills")
+        if not skills:
+            return
+        heading(section_label("skills", template))
         if isinstance(skills, dict):
             for k, v in skills.items():
                 joined = _join(v) if isinstance(v, list) else str(v or "")
@@ -293,56 +325,128 @@ def render_docx(content: dict[str, Any]) -> bytes:
         else:
             doc.add_paragraph(str(skills))
 
-    if content.get("experience"):
-        doc.add_heading("Experience", 1)
+    def write_experience() -> None:
+        if not content.get("experience"):
+            return
+        heading(section_label("experience", template))
         for item in content["experience"]:
             p = doc.add_paragraph()
-            run = p.add_run(f"{item.get('title', '')}  ·  {item.get('company', '')}")
-            run.bold = True
+            p.add_run(f"{item.get('title', '')}  ·  {item.get('company', '')}").bold = True
             dates = " – ".join(str(x) for x in [item.get("start_date"), item.get("end_date")] if x)
             if dates:
-                r2 = p.add_run(f"    {dates}")
-                r2.italic = True
+                p.add_run(f"    {dates}").italic = True
             for bullet in _bullets(item):
                 doc.add_paragraph(bullet, style="List Bullet")
 
-    if content.get("projects"):
-        doc.add_heading("Projects", 1)
+    def write_projects() -> None:
+        if not content.get("projects"):
+            return
+        heading(section_label("projects", template))
         for item in content["projects"]:
             p = doc.add_paragraph()
-            run = p.add_run(str(item.get("name") or ""))
-            run.bold = True
+            p.add_run(str(item.get("name") or "")).bold = True
+            tech = _join(item.get("technologies") or [])
+            if tech:
+                p.add_run(f"    {tech}").italic = True
             if item.get("description"):
                 doc.add_paragraph(str(item["description"]))
 
-    if content.get("education"):
-        doc.add_heading("Education", 1)
+    def write_education() -> None:
+        if not content.get("education"):
+            return
+        heading(section_label("education", template))
         for item in content["education"]:
             doc.add_paragraph(f"{item.get('degree', '')}  ·  {item.get('institution', '')}")
+            extra = "  ·  ".join(
+                str(x) for x in [item.get("major"), f"GPA {item['gpa']}" if item.get("gpa") else ""] if x
+            )
+            if extra:
+                doc.add_paragraph(extra)
+
+    writers = {
+        "summary": write_summary,
+        "skills": write_skills,
+        "experience": write_experience,
+        "projects": write_projects,
+        "education": write_education,
+    }
+    for section in TEMPLATE_LAYOUT.get(template, TEMPLATE_LAYOUT["ats_classic"]):
+        writers[section]()
 
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
 
 
-def render_markdown(content: dict[str, Any]) -> str:
+def render_markdown(content: dict[str, Any], template: str = "ats_classic") -> str:
     contact = content.get("contact") or {}
-    lines = [f"# {contact.get('name') or 'Resume'}", ""]
-    if content.get("summary"):
-        lines += ["## Summary", str(content["summary"]), ""]
-    lines.append("## Skills")
-    skills = content.get("skills") or {}
-    if isinstance(skills, dict):
-        for k, v in skills.items():
-            joined = _join(v) if isinstance(v, list) else str(v or "")
-            if joined:
-                lines.append(f"- **{str(k).replace('_', ' ').title()}:** {joined}")
+    lines = [f"# {contact.get('name') or 'Resume'}"]
+    meta = "  |  ".join(
+        str(x)
+        for x in [contact.get("email"), contact.get("phone"), contact.get("location"), contact.get("links")]
+        if x
+    )
+    if meta:
+        lines.append(meta)
     lines.append("")
-    if content.get("experience"):
-        lines.append("## Experience")
+
+    def write_summary() -> None:
+        if content.get("summary"):
+            lines.extend([f"## {section_label('summary', template)}", str(content["summary"]), ""])
+
+    def write_skills() -> None:
+        skills = content.get("skills") or {}
+        rows = []
+        if isinstance(skills, dict):
+            for k, v in skills.items():
+                joined = _join(v) if isinstance(v, list) else str(v or "")
+                if joined:
+                    rows.append(f"- **{str(k).replace('_', ' ').title()}:** {joined}")
+        elif skills:
+            rows.append(f"- {skills}")
+        if rows:
+            lines.extend([f"## {section_label('skills', template)}", *rows, ""])
+
+    def write_experience() -> None:
+        if not content.get("experience"):
+            return
+        lines.append(f"## {section_label('experience', template)}")
         for item in content["experience"]:
             lines.append(f"### {item.get('title', '')}  ·  {item.get('company', '')}")
-            for b in _bullets(item):
-                lines.append(f"- {b}")
+            dates = " – ".join(str(x) for x in [item.get("start_date"), item.get("end_date")] if x)
+            if dates:
+                lines.append(f"*{dates}*")
+            lines.extend(f"- {b}" for b in _bullets(item))
             lines.append("")
+
+    def write_projects() -> None:
+        if not content.get("projects"):
+            return
+        lines.append(f"## {section_label('projects', template)}")
+        for item in content["projects"]:
+            lines.append(f"### {item.get('name') or ''}")
+            tech = _join(item.get("technologies") or [])
+            if tech:
+                lines.append(f"*{tech}*")
+            if item.get("description"):
+                lines.append(str(item["description"]))
+            lines.append("")
+
+    def write_education() -> None:
+        if not content.get("education"):
+            return
+        lines.append(f"## {section_label('education', template)}")
+        for item in content["education"]:
+            lines.append(f"- {item.get('degree', '')}  ·  {item.get('institution', '')}")
+        lines.append("")
+
+    writers = {
+        "summary": write_summary,
+        "skills": write_skills,
+        "experience": write_experience,
+        "projects": write_projects,
+        "education": write_education,
+    }
+    for section in TEMPLATE_LAYOUT.get(template, TEMPLATE_LAYOUT["ats_classic"]):
+        writers[section]()
     return "\n".join(lines)

@@ -106,9 +106,11 @@ export default function ProfilePage() {
   const [education, setEducation] = useState<Edu[]>([blankEdu()]);
   const [experience, setExperience] = useState<Exp[]>([blankExp()]);
   const [projects, setProjects] = useState<Proj[]>([blankProj()]);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     api<{
+      full_name: string;
       country: string;
       city: string;
       professional_status: string;
@@ -123,6 +125,7 @@ export default function ProfilePage() {
       github_username?: string;
     }>("/api/profile").then((p) => {
       setForm({
+        full_name: p.full_name || "",
         country: p.country,
         city: p.city,
         professional_status: p.professional_status,
@@ -189,15 +192,24 @@ export default function ProfilePage() {
             }))
           : [blankProj()]
       );
+      setLoaded(true);
+    }).catch((e) => {
+      setError(e instanceof Error ? e.message : "Could not load your profile. Refresh before saving.");
+      setLoaded(false);
     });
   }, []);
 
   async function save(e: FormEvent) {
     e.preventDefault();
+    if (!loaded) {
+      setError("Wait for your profile to load before saving, or refresh the page.");
+      return;
+    }
     setError("");
     setSaved("");
     try {
       const payload = {
+        full_name: form.full_name,
         country: form.country,
         city: form.city,
         professional_status: form.professional_status,
@@ -302,6 +314,7 @@ export default function ProfilePage() {
     });
     setSaved("Student example is ready. Save your profile to keep it.");
     setError("");
+    setLoaded(true);
   }
 
   const set = (k: string) => (e: { target: { value: string } }) => setForm({ ...form, [k]: e.target.value });
@@ -316,7 +329,7 @@ export default function ProfilePage() {
             <Button variant="ghost" type="button" onClick={loadStudentExample}>
               Load student example
             </Button>
-            <Button type="submit">Save profile</Button>
+            <Button type="submit" disabled={!loaded}>Save profile</Button>
           </div>
         }
       />
@@ -331,6 +344,14 @@ export default function ProfilePage() {
       <div className="grid gap-4 md:grid-cols-2">
         <Card className="space-y-4">
           <h2 className="font-display text-2xl">Personal</h2>
+          <Field label="Full name">
+            <input
+              className={inputClass}
+              value={form.full_name || ""}
+              onChange={set("full_name")}
+              placeholder="The name that appears on your resume"
+            />
+          </Field>
           <Field label="Headline">
             <input className={inputClass} value={form.headline || ""} onChange={set("headline")} />
           </Field>
@@ -529,7 +550,7 @@ export default function ProfilePage() {
         ))}
       </section>
       <div className="mt-6 flex flex-wrap items-center gap-3">
-        <Button type="submit">Save profile</Button>
+        <Button type="submit" disabled={!loaded}>Save profile</Button>
         {saved && <span className="text-sm font-medium text-moss">{saved}</span>}
       </div>
     </form>

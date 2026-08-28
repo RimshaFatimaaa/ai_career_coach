@@ -7,6 +7,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.deps import CurrentUser, DbDep
 from app.models import ProfileImport, Reminder
 from app.services.analytics import analytics_payload
+from app.services.billing import assert_within_limit, consume
 from app.services.profile import ensure_profile, profile_to_text
 from app.services.reminders import add_reminder, generate_from_activity, list_reminders
 from app.services.social import analyze_import, fetch_github
@@ -98,14 +99,18 @@ def list_imports(user: CurrentUser, db: DbDep):
 
 @router.post("/imports/github")
 def import_github(payload: GithubIn, user: CurrentUser, db: DbDep):
+    assert_within_limit(db, user, "profile_imports")
     try:
         raw = fetch_github(payload.handle)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"GitHub could not be reached ({exc}).") from exc
     profile = ensure_profile(db, user)
-    analysis = analyze_import("github", raw, profile_to_text(user, profile))
+    analysis = analyze_import("github", raw, profile_to_text(user, profile), plan=user.plan)
+    consume(db, user, "profile_imports")
     row = ProfileImport(user_id=user.id, source="github", handle=raw["handle"], raw=raw, analysis=analysis)
     db.add(row)
     profile.github_username = raw["handle"]
@@ -119,9 +124,11 @@ def import_linkedin(payload: LinkedInIn, user: CurrentUser, db: DbDep):
     text = (payload.text or "").strip()
     if len(text) < 40:
         raise HTTPException(400, "Paste at least a few lines from your LinkedIn About / Experience sections. LinkedIn blocks automated scraping.")
+    assert_within_limit(db, user, "profile_imports")
     profile = ensure_profile(db, user)
     raw = {"source": "linkedin", "url": payload.url, "text": text[:12000]}
-    analysis = analyze_import("linkedin", raw, profile_to_text(user, profile))
+    analysis = analyze_import("linkedin", raw, profile_to_text(user, profile), plan=user.plan)
+    consume(db, user, "profile_imports")
     handle = payload.url or "pasted-profile"
     row = ProfileImport(user_id=user.id, source="linkedin", handle=handle, raw=raw, analysis=analysis)
     db.add(row)

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
@@ -26,6 +26,9 @@ class User(Base):
     card_brand: Mapped[str] = mapped_column(String(32), default="")
     password_reset_token_hash: Mapped[str] = mapped_column(String(64), default="")
     password_reset_expires: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    terms_accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Incremented on password reset so previously issued tokens stop working.
+    session_epoch: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -78,6 +81,7 @@ class Resume(Base):
     content: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     change_log: Mapped[list[Any]] = mapped_column(JSON, default=list)
     last_ats: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    file_path: Mapped[str] = mapped_column(String(500), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -94,6 +98,7 @@ class Roadmap(Base):
     duration_months: Mapped[int] = mapped_column(Integer, default=3)
     milestones: Mapped[list[Any]] = mapped_column(JSON, default=list)
     skill_gap: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    is_saved: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -150,6 +155,9 @@ class Conversation(Base):
 
 class UsageRecord(Base):
     __tablename__ = "usage_records"
+    __table_args__ = (
+        UniqueConstraint("user_id", "feature", "period", name="uq_usage_user_feature_period"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))

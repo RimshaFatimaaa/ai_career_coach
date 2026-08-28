@@ -6,8 +6,6 @@ import { PageTitle } from "@/components/shell";
 import { Button, Card, ErrorText, inputClass } from "@/components/ui";
 import { api, getToken } from "@/lib/api";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
 type Interview = {
   id: number;
   target_role: string;
@@ -52,18 +50,26 @@ export default function InterviewSessionPage() {
   const chunksRef = useRef<Blob[]>([]);
   const startedRef = useRef(0);
   const playedKey = useRef("");
+  const audioBlobRef = useRef<Blob | null>(null);
 
   async function load() {
     setRow(await api<Interview>(`/api/interviews/${params.id}`));
   }
   useEffect(() => {
+    setRow(null);
+    setAnswer("");
+    setError("");
+    setLastEval(null);
+    setVoiceDurationMs(0);
+    audioBlobRef.current = null;
+    playedKey.current = "";
     load().catch((e) => setError(e.message));
   }, [params.id]);
 
   async function playQuestion(prompt?: string) {
     setError("");
     try {
-      const res = await fetch(`${API}/api/interviews/${params.id}/speak`, {
+      const res = await fetch(`/api/interviews/${params.id}/speak`, {
         headers: { Authorization: `Bearer ${getToken()}` },
       });
       if (res.ok) {
@@ -97,13 +103,28 @@ export default function InterviewSessionPage() {
     setBusy(true);
     setError("");
     try {
-      const res = await api<Interview & { evaluation: Record<string, unknown> }>(`/api/interviews/${params.id}/answer`, {
-        method: "POST",
-        body: JSON.stringify({ answer, duration_ms: voiceDurationMs || undefined }),
-      });
+      const voiceSubmit = row?.mode === "voice" && audioBlobRef.current && audioBlobRef.current.size >= 256;
+      const res = voiceSubmit
+        ? await (async () => {
+            const blob = audioBlobRef.current as Blob;
+            const ext = (blob.type || "").includes("mp4") ? "mp4" : "webm";
+            const fd = new FormData();
+            fd.append("audio", blob, `answer.${ext}`);
+            fd.append("duration_ms", String(voiceDurationMs || 0));
+            fd.append("transcript", answer);
+            return api<Interview & { evaluation: Record<string, unknown> }>(
+              `/api/interviews/${params.id}/voice-answer`,
+              { method: "POST", body: fd },
+            );
+          })()
+        : await api<Interview & { evaluation: Record<string, unknown> }>(`/api/interviews/${params.id}/answer`, {
+            method: "POST",
+            body: JSON.stringify({ answer, duration_ms: voiceDurationMs || undefined }),
+          });
       setLastEval(res.evaluation);
       setAnswer("");
       setVoiceDurationMs(0);
+      audioBlobRef.current = null;
       setRow(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
@@ -129,6 +150,7 @@ export default function InterviewSessionPage() {
       rec.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
+        audioBlobRef.current = blob;
         const duration = Date.now() - startedRef.current;
         setVoiceDurationMs(duration);
         setBusy(true);
@@ -158,7 +180,14 @@ export default function InterviewSessionPage() {
     }
   }
 
-  if (!row) return <p className="text-mist">Loading session…</p>;
+  if (!row) {
+    return (
+      <div>
+        <ErrorText error={error} />
+        <p className="text-mist">{error ? "Could not load that interview." : "Loading session…"}</p>
+      </div>
+    );
+  }
 
   if (row.status === "completed" && row.report) {
     const r = row.report;
@@ -174,7 +203,7 @@ export default function InterviewSessionPage() {
             ["Relevance", r.relevance],
           ].map(([k, v]) => (
             <Card key={String(k)}>
-              <div className="text-xs text-mist">{k}</div>
+              <div className="text-xs text-mist">{String(k)}</div>
               <div className="font-display text-3xl">{v ?? "—"}</div>
             </Card>
           ))}

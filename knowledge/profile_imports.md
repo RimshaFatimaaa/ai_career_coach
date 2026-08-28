@@ -1,3 +1,10 @@
+title: LinkedIn and GitHub analysis
+source: internal
+category: product
+topic: profile-imports
+target_role: any
+experience_level: any
+
 # LinkedIn and GitHub analysis
 
 Atelier can analyze a **public GitHub profile** and **LinkedIn text you paste**. It does not log in to LinkedIn, scrape behind a login, or invent jobs.

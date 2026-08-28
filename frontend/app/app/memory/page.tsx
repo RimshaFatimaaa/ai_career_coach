@@ -10,9 +10,21 @@ type Mem = { id: number; category: string; key: string; value: string; enabled: 
 export default function MemoryPage() {
   const [rows, setRows] = useState<Mem[]>([]);
   const [error, setError] = useState("");
+  const [locked, setLocked] = useState(false);
 
   async function load() {
-    setRows(await api<Mem[]>("/api/memory"));
+    try {
+      setRows(await api<Mem[]>("/api/memory"));
+      setLocked(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Could not load career memory";
+      if (/Pro and Premium|paid plan/i.test(msg)) {
+        setLocked(true);
+        setRows([]);
+        return;
+      }
+      throw err;
+    }
   }
   useEffect(() => {
     load().catch((e) => setError(e.message));
@@ -63,7 +75,18 @@ export default function MemoryPage() {
         <p>Pro and Premium can save memories. You can correct, disable, or delete anything stored here.</p>
       </div>
       <ErrorText error={error} />
-      <Card className="mb-6">
+      {locked && (
+        <Card className="mb-6 space-y-3">
+          <h2 className="font-display text-2xl">Career memory is on Pro</h2>
+          <p className="text-sm text-mist">
+            Free accounts do not store durable preferences, and the coach does not read them. Upgrade to keep notes the
+            coach carries between conversations. Anything you saved on a paid plan is retained and returns if you
+            upgrade again.
+          </p>
+          <Button href="/app/settings">See plans</Button>
+        </Card>
+      )}
+      <Card className={locked ? "mb-6 opacity-50" : "mb-6"}>
         <form onSubmit={add} className="grid gap-3 md:grid-cols-4">
           <Field label="Category">
             <select name="category" className={inputClass}>
@@ -81,7 +104,9 @@ export default function MemoryPage() {
             <input name="value" required className={inputClass} placeholder="Target architecture studios, not product companies" />
           </Field>
           <div className="flex items-end">
-            <Button type="submit">Save</Button>
+            <Button type="submit" disabled={locked}>
+              Save
+            </Button>
           </div>
         </form>
       </Card>
@@ -98,8 +123,16 @@ export default function MemoryPage() {
               <button
                 className="text-copper"
                 onClick={async () => {
-                  await api(`/api/memory/${m.id}`, { method: "PATCH", body: JSON.stringify({ enabled: !m.enabled }) });
-                  load();
+                  setError("");
+                  try {
+                    await api(`/api/memory/${m.id}`, {
+                      method: "PATCH",
+                      body: JSON.stringify({ enabled: !m.enabled }),
+                    });
+                    await load();
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : "Could not update that memory");
+                  }
                 }}
               >
                 {m.enabled ? "Disable" : "Enable"}
@@ -107,8 +140,13 @@ export default function MemoryPage() {
               <button
                 className="text-red-800"
                 onClick={async () => {
-                  await api(`/api/memory/${m.id}`, { method: "DELETE" });
-                  load();
+                  setError("");
+                  try {
+                    await api(`/api/memory/${m.id}`, { method: "DELETE" });
+                    await load();
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : "Could not delete that memory");
+                  }
                 }}
               >
                 Delete
@@ -116,7 +154,7 @@ export default function MemoryPage() {
             </div>
           </Card>
         ))}
-        {rows.length === 0 && (
+        {rows.length === 0 && !locked && (
           <p className="text-sm text-mist">Nothing stored yet. Save a preference, or talk to the coach and it can offer to remember one.</p>
         )}
       </div>
