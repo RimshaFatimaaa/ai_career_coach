@@ -4,6 +4,13 @@ One AI-native career platform: **Career Coach**, **Resume Studio**, and **Interv
 
 The product is the profile, memory, and resume/interview intelligence. Chat is only the interface.
 
+## Demo
+
+[![Atelier demo](docs/demo.gif)](https://github.com/RimshaFatimaaa/ai_career_coach/blob/HEAD/atelier_demo.mp4)
+
+Sped-up preview. Click it for the full 4-minute walkthrough in GitHub's video player, or
+[download the original](https://github.com/RimshaFatimaaa/ai_career_coach/releases/download/demo-v1/atelier_demo.mp4).
+
 ## Stack (PRD §8)
 
 | Layer | Implementation |
